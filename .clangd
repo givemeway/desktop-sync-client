@@ -1,0 +1,6 @@
+
+CompileFlags:
+  Add: 
+    - -I"C:/Users/Sandeep Kumar/Desktop/sync-client/cpp-client/src"
+    - -std=c++20
+    - -xc++ 
