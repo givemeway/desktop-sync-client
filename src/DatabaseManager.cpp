@@ -138,8 +138,12 @@ std::vector<FileMetadata> DatabaseManager::getAllFiles() {
   return m_impl->storage.get_all<FileMetadata>();
 }
 
-std::vector<FileQueueEntry> DatabaseManager::getAllQueueFiles() {
-  return m_impl->storage.get_all<FileQueueEntry>();
+std::optional<std::vector<FileQueueEntry>> DatabaseManager::getAllQueueFiles() {
+  try {
+    return m_impl->storage.get_all<FileQueueEntry>();
+  } catch (std::exception &e) {
+    std::cerr << "[DB] " << std::endl;
+  }
 }
 
 std::optional<FileMetadata>
@@ -332,6 +336,15 @@ bool DatabaseManager::updateFileQueue(const FileQueueEntry &entry) {
     return true;
   } catch (...) {
     return false;
+  }
+}
+
+std::optional<std::vector<DirectoryQueueEntry>>
+DatabaseManager::getAllQueueDirectories() {
+  try {
+    return m_impl->storage.get_all<DirectoryQueueEntry>();
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] " << e.what() << std::endl;
   }
 }
 

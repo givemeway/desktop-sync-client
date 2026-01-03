@@ -1,15 +1,15 @@
 //
 //  httplib.h
 //
-//  Copyright (c) 2025 Yuji Hirose. All rights reserved.
+//  Copyright (c) 2026 Yuji Hirose. All rights reserved.
 //  MIT License
 //
 
 #ifndef CPPHTTPLIB_HTTPLIB_H
 #define CPPHTTPLIB_HTTPLIB_H
 
-#define CPPHTTPLIB_VERSION "0.29.0"
-#define CPPHTTPLIB_VERSION_NUM "0x001D00"
+#define CPPHTTPLIB_VERSION "0.30.0"
+#define CPPHTTPLIB_VERSION_NUM "0x001E00"
 
 /*
  * Platform compatibility check
@@ -2443,16 +2443,20 @@ namespace detail {
 
 #if defined(_WIN32)
 inline std::wstring u8string_to_wstring(const char *s) {
-  std::wstring ws;
+  if (!s) { return std::wstring(); }
+
   auto len = static_cast<int>(strlen(s));
+  if (!len) { return std::wstring(); }
+
   auto wlen = ::MultiByteToWideChar(CP_UTF8, 0, s, len, nullptr, 0);
-  if (wlen > 0) {
-    ws.resize(wlen);
-    wlen = ::MultiByteToWideChar(
-        CP_UTF8, 0, s, len,
-        const_cast<LPWSTR>(reinterpret_cast<LPCWSTR>(ws.data())), wlen);
-    if (wlen != static_cast<int>(ws.size())) { ws.clear(); }
-  }
+  if (!wlen) { return std::wstring(); }
+
+  std::wstring ws;
+  ws.resize(wlen);
+  wlen = ::MultiByteToWideChar(
+      CP_UTF8, 0, s, len,
+      const_cast<LPWSTR>(reinterpret_cast<LPCWSTR>(ws.data())), wlen);
+  if (wlen != static_cast<int>(ws.size())) { ws.clear(); }
   return ws;
 }
 #endif
@@ -4543,6 +4547,7 @@ inline int getaddrinfo_with_timeout(const char *node, const char *service,
 
   return ret;
 #elif TARGET_OS_MAC
+  if (!node) { return EAI_NONAME; }
   // macOS implementation using CFHost API for asynchronous DNS resolution
   CFStringRef hostname_ref = CFStringCreateWithCString(
       kCFAllocatorDefault, node, kCFStringEncodingUTF8);
@@ -8457,6 +8462,23 @@ make_host_and_port_string_always_port(const std::string &host, int port) {
   return prepare_host_string(host) + ":" + std::to_string(port);
 }
 
+template <typename T>
+inline bool check_and_write_headers(Stream &strm, Headers &headers,
+                                    T header_writer, Error &error) {
+  for (const auto &h : headers) {
+    if (!detail::fields::is_field_name(h.first) ||
+        !detail::fields::is_field_value(h.second)) {
+      error = Error::InvalidHeaders;
+      return false;
+    }
+  }
+  if (header_writer(strm, headers) <= 0) {
+    error = Error::Write;
+    return false;
+  }
+  return true;
+}
+
 } // namespace detail
 
 // HTTP server implementation
@@ -8864,7 +8886,7 @@ inline bool Server::write_response_core(Stream &strm, bool close_connection,
   {
     detail::BufferStream bstrm;
     if (!detail::write_response_line(bstrm, res.status)) { return false; }
-    if (!header_writer_(bstrm, res.headers)) { return false; }
+    if (header_writer_(bstrm, res.headers) <= 0) { return false; }
 
     // Flush buffer
     auto &data = bstrm.get_buffer();
@@ -10359,8 +10381,8 @@ ClientImpl::open_stream(const std::string &method, const std::string &path,
     return handle;
   }
 
-  if (!detail::write_headers(strm, req.headers)) {
-    handle.error = Error::Write;
+  if (!detail::check_and_write_headers(strm, req.headers, header_writer_,
+                                       handle.error)) {
     handle.response.reset();
     return handle;
   }
@@ -10957,7 +10979,11 @@ inline bool ClientImpl::write_request(Stream &strm, Request &req,
 
     // Write request line and headers
     detail::write_request_line(bstrm, req.method, path_with_query);
-    header_writer_(bstrm, req.headers);
+    if (!detail::check_and_write_headers(bstrm, req.headers, header_writer_,
+                                         error)) {
+      output_error_log(error, &req);
+      return false;
+    }
 
     // Flush buffer
     auto &data = bstrm.get_buffer();

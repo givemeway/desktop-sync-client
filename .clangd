@@ -1,6 +1,10 @@
 
 CompileFlags:
   Add: 
-    - -I"C:/Users/Sandeep Kumar/Desktop/sync-client/cpp-client/src"
+    - -I"include"
+    - -I"src"
+    - -I"external"
+    - -I"external/sqlite_orm_repo/include"
+    - -I"external/efsw/include"
     - -std=c++20
     - -xc++ 

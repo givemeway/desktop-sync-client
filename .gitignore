@@ -1,6 +1,8 @@
 build
 
 .vs
+.clang
+.cache
 
 # Prerequisites
 *.d

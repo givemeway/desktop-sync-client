@@ -577,11 +577,10 @@ void ReconciliationService::reconcileLocalState(
       m_dbManager.upsertDirectoryQueue(q);
     }
   }
-
   auto filesInQueue = m_dbManager.getAllQueueFiles();
   std::map<std::string, std::vector<FileQueueEntry>> inodeGroups;
   std::map<std::string, std::vector<FileQueueEntry>> renamedCandidates;
-  for (const FileQueueEntry &f : filesInQueue) {
+  for (const FileQueueEntry &f : *filesInQueue) {
     inodeGroups[f.inode].push_back(f);
   }
   for (const auto &[inode, files] : inodeGroups) {

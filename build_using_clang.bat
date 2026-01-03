@@ -1,6 +1,6 @@
 @echo off
 
-set CMAKE_EXE="C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+set CMAKE_EXE="C:\Program Files\CMake\bin\cmake.exe"
 
 if exist build rmdir /s /q build
 mkdir build
@@ -16,4 +16,4 @@ if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 
 echo Build Successful!
-.\build\Debug\sync_client.exe
+.\build\sync_client.exe

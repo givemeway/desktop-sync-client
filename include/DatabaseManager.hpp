@@ -23,7 +23,8 @@ public:
 
   // File operations
   std::vector<FileMetadata> getAllFiles();
-  std::vector<FileQueueEntry> getAllQueueFiles();
+  std::optional<std::vector<FileQueueEntry>> getAllQueueFiles();
+  std::optional<std::vector<DirectoryQueueEntry>> getAllQueueDirectories();
   std::optional<FileMetadata> getFileByOrigin(const std::string &origin);
   std::optional<FileMetadata> getFileByPath(const std::string &path,
                                             const std::string &filename);

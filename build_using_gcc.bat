@@ -3,7 +3,7 @@
 REM GCC PATH - uncomment ONE line matching your MinGW install
 REM set "PATH=C:\mingw64\bin;%PATH%"
 
-set CMAKE_EXE="C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+set CMAKE_EXE="C:\Program Files\CMake\bin\cmake.exe"
 
 if exist build rmdir /s /q build
 mkdir build
