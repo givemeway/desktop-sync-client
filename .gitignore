@@ -1,5 +1,7 @@
 build
 
+.vs
+
 # Prerequisites
 *.d
 
