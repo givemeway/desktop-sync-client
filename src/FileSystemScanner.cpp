@@ -85,6 +85,19 @@ std::string FileSystemScanner::calculateHash(const std::string &absPath) {
   return picosha2::bytes_to_hex_string(hash.begin(), hash.end());
 }
 
+std::int64_t
+FileSystemScanner::getUnixTimeStamp(const fs::file_time_type &ftime) {
+  auto now_file = fs::file_time_type::clock::now();
+  auto now_sys = std::chrono::system_clock::now();
+  auto file_duration = ftime - now_file;
+  auto sys_time =
+      now_sys + std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                    file_duration);
+  return std::chrono::duration_cast<std::chrono::seconds>(
+             sys_time.time_since_epoch())
+      .count();
+}
+
 ScanResult FileSystemScanner::scanSyncPath(std::string path) {
   ScanResult result;
   fs::directory_options opts = fs::directory_options::skip_permission_denied;
@@ -101,21 +114,7 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
           file.path = toRelativePath(file.absPath);
           file.filename = entry.path().filename().string();
           file.size = entry.file_size();
-          auto ftime = entry.last_write_time();
-
-          // Convert file_time to Unix timestamp (seconds since Jan 1, 1970)
-          auto now_file = std::filesystem::file_time_type::clock::now();
-          auto now_sys = std::chrono::system_clock::now();
-          auto file_duration = ftime - now_file;
-          auto sys_time =
-              now_sys +
-              std::chrono::duration_cast<std::chrono::system_clock::duration>(
-                  file_duration);
-          auto unix_timestamp =
-              std::chrono::duration_cast<std::chrono::seconds>(
-                  sys_time.time_since_epoch())
-                  .count();
-          file.mtime = unix_timestamp;
+          file.mtime = getUnixTimeStamp(fs::last_write_time(file.absPath));
           file.inode = getInode(file.absPath);
           file.hash = calculateHash(file.absPath);
           result.files.push_back(file);
@@ -126,20 +125,7 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
           dir.path = toRelativePath(dir.absPath);
           dir.name = entry.path().filename().string();
           dir.inode = getInode(dir.absPath);
-          auto ftime = entry.last_write_time();
-          // Convert file_time to Unix timestamp (seconds since Jan 1, 1970)
-          auto now_file = std::filesystem::file_time_type::clock::now();
-          auto now_sys = std::chrono::system_clock::now();
-          auto file_duration = ftime - now_file;
-          auto sys_time =
-              now_sys +
-              std::chrono::duration_cast<std::chrono::system_clock::duration>(
-                  file_duration);
-          auto unix_timestamp =
-              std::chrono::duration_cast<std::chrono::seconds>(
-                  sys_time.time_since_epoch())
-                  .count();
-          dir.mtime = unix_timestamp;
+          dir.mtime = getUnixTimeStamp(fs::last_write_time(dir.absPath));
           result.directories.push_back(dir);
         }
       } catch (const std::exception &e) {

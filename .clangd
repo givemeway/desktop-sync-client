@@ -1,5 +1,5 @@
-
 CompileFlags:
+  CompilationDatabase: build
   Add: 
     - -I"include"
     - -I"src"

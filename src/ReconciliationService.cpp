@@ -97,7 +97,7 @@ ReconciliationResult ReconciliationService::reconcile(
   std::map<std::string, std::vector<FileQueueEntry>> localQueueByUuid;
   std::map<std::string, FileQueueEntry> localQueueByPath;
 
-  for (const auto &q : localFileQueue) {
+  for (const auto &q : *localFileQueue) {
     if (!q.origin.empty())
       localQueueByOrigin[q.origin] = q;
     localQueueByUuid[q.uuid].push_back(q);
@@ -223,7 +223,7 @@ ReconciliationResult ReconciliationService::reconcile(
       // Check if already in queue
       auto dirsInQ = m_dbManager.getDirectoryQueue();
       bool alreadyInQ = std::any_of(
-          dirsInQ.begin(), dirsInQ.end(), [&](const DirectoryQueueEntry &e) {
+          dirsInQ->begin(), dirsInQ->end(), [&](const DirectoryQueueEntry &e) {
             return e.path == path && e.device == cloudDir.device &&
                    e.folder == cloudDir.folder;
           });
@@ -246,7 +246,7 @@ ReconciliationResult ReconciliationService::reconcile(
     if (cloudDirMap.find(path) == cloudDirMap.end()) {
       auto dirsInQ = m_dbManager.getDirectoryQueue();
       bool alreadyInQ = std::any_of(
-          dirsInQ.begin(), dirsInQ.end(),
+          dirsInQ->begin(), dirsInQ->end(),
           [&](const DirectoryQueueEntry &e) { return e.path == path; });
 
       if (!alreadyInQ) {
@@ -257,7 +257,7 @@ ReconciliationResult ReconciliationService::reconcile(
   }
 
   // 8. Handle Directory Renames (using inodes from local queue)
-  std::vector<RenameInfo> renames = detectDirRenames(localDirQueue);
+  std::vector<RenameInfo> renames = detectDirRenames(*localDirQueue);
   std::vector<RenameInfo> collapsed = collapseDirRenames(renames);
   reconcileDirRenamedCandidates(collapsed);
 
@@ -393,17 +393,17 @@ void ReconciliationService::reconcileLocalState(
             << std::endl;
 
   // 1. Fetch current DB state
-  std::vector<FileMetadata> dbFiles = m_dbManager.getAllFiles();
-  std::vector<DirectoryMetadata> dbDirs = m_dbManager.getAllDirectories();
+  auto dbFiles = m_dbManager.getAllFiles();
+  auto dbDirs = m_dbManager.getAllDirectories();
 
   // Index DB State
   std::map<std::string, FileMetadata> dbFilesPathMap;
-  for (const auto &f : dbFiles) {
+  for (const auto &f : *dbFiles) {
     dbFilesPathMap[getUniqueKey(f.path, f.filename)] = f;
   }
 
   std::map<std::string, DirectoryMetadata> dbDirsPathMap;
-  for (const auto &d : dbDirs) {
+  for (const auto &d : *dbDirs) {
     std::string path = d.path;
     if (path.length() > 1 && path.back() == '/')
       path.pop_back(); // Normalize
@@ -450,8 +450,13 @@ void ReconciliationService::reconcileLocalState(
       fq.old_path = sFile.path;
 
       pathParts part = m_dbManager.getFolderDevice(f.path);
+      std::cout << "[Reconcile] " << "device : " << part.device
+                << " folder: " << part.folder << " path: " << f.path
+                << std::endl;
       auto dir =
           m_dbManager.getDirectoryByPath(part.device, part.folder, f.path);
+      std::cout << "[Reconcile] dir value exists : " << dir.has_value()
+                << std::endl;
       if (dir.has_value()) {
         fq.dirID = dir->uuid;
         f.dirID = dir->uuid;
@@ -471,19 +476,7 @@ void ReconciliationService::reconcileLocalState(
           d.inode = m_scanner.getInode(d.absPath);
           std::filesystem::path dir{d.absPath};
           auto ftime = std::filesystem::directory_entry(dir).last_write_time();
-          // Convert file_time to Unix timestamp (seconds since Jan 1, 1970)
-          auto now_file = std::filesystem::file_time_type::clock::now();
-          auto now_sys = std::chrono::system_clock::now();
-          auto file_duration = ftime - now_file;
-          auto sys_time =
-              now_sys +
-              std::chrono::duration_cast<std::chrono::system_clock::duration>(
-                  file_duration);
-          auto unix_timestamp =
-              std::chrono::duration_cast<std::chrono::seconds>(
-                  sys_time.time_since_epoch())
-                  .count();
-          d.created_at = std::to_string(unix_timestamp);
+          d.created_at = std::to_string(m_scanner.getUnixTimeStamp(ftime));
         } catch (const std::filesystem::filesystem_error &e) {
           d.created_at = "";
           d.inode = "";
@@ -509,7 +502,6 @@ void ReconciliationService::reconcileLocalState(
                   << std::endl;
         FileQueueEntry fq;
         FileMetadata f;
-
         f.path = sFile.path;
         f.dirID = dbFile.dirID;
         f.filename = sFile.filename;
@@ -556,8 +548,14 @@ void ReconciliationService::reconcileLocalState(
       q.absPath = sDir.absPath;
       q.inode = sDir.inode;
       q.created_at = std::to_string(sDir.mtime);
-      q.uuid = UuidUtils::generate();
       pathParts part = m_dbManager.getFolderDevice(sDir.path);
+      auto existingDir =
+          m_dbManager.getDirectoryByPath(part.device, sDir.name, sDir.path);
+      if (existingDir.has_value()) {
+        q.uuid = existingDir->uuid;
+      } else {
+        q.uuid = UuidUtils::generate();
+      }
       q.device = part.device;
       qd = DirectoryMetadata(q);
       qd.sync_status = "new";

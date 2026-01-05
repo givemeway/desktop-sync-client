@@ -22,7 +22,7 @@ public:
   void initializeSchema();
 
   // File operations
-  std::vector<FileMetadata> getAllFiles();
+  std::optional<std::vector<FileMetadata>> getAllFiles();
   std::optional<std::vector<FileQueueEntry>> getAllQueueFiles();
   std::optional<std::vector<DirectoryQueueEntry>> getAllQueueDirectories();
   std::optional<FileMetadata> getFileByOrigin(const std::string &origin);
@@ -34,7 +34,7 @@ public:
   bool upsertFile(const FileMetadata &file);
 
   // Directory operations
-  std::vector<DirectoryMetadata> getAllDirectories();
+  std::optional<std::vector<DirectoryMetadata>> getAllDirectories();
   std::optional<DirectoryMetadata> getDirectoryByPath(const std::string &device,
                                                       const std::string &folder,
                                                       const std::string &path);
@@ -44,14 +44,14 @@ public:
   bool upsertDirectory(const DirectoryMetadata &dir);
 
   // File Queue operations
-  std::vector<FileQueueEntry> getFileQueue();
+  std::optional<std::vector<FileQueueEntry>> getFileQueue();
   bool insertFileQueue(const FileQueueEntry &entry);
   bool updateFileQueue(const FileQueueEntry &entry);
   bool deleteFileQueue(const std::string &origin);
   bool upsertFileQueue(const FileQueueEntry &entry);
 
   // Directory Queue operations
-  std::vector<DirectoryQueueEntry> getDirectoryQueue();
+  std::optional<std::vector<DirectoryQueueEntry>> getDirectoryQueue();
   bool insertDirectoryQueue(const DirectoryQueueEntry &entry);
   bool updateDirectoryQueue(const DirectoryQueueEntry &entry);
   bool deleteDirectoryQueue(const std::string &uuid);

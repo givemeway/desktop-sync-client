@@ -32,6 +32,7 @@ add_executable(sync_client
     src/ApiClient.cpp
     src/FilesystemWatcher.cpp
     src/FileSystemScanner.cpp
+    src/SyncWorker.cpp
 )
 
 # Link Libraries

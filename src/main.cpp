@@ -1,16 +1,16 @@
 #include "ApiClient.hpp"
 #include "DatabaseManager.hpp"
+#include "FileSystemScanner.hpp"
 #include "FilesystemWatcher.hpp"
 #include "ReconciliationService.hpp"
-#include "FileSystemScanner.hpp"
+#include "SyncWorker.hpp"
 #include <chrono>
-
-namespace fs = std::filesystem;
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <thread>
 
+namespace fs = std::filesystem;
 int main() {
   std::cout << "Sync Client starting..." << std::endl;
 
@@ -34,27 +34,31 @@ int main() {
       return 1;
     }
     dbManager.initializeSchema();
-    sync::ApiClient apiClient(apiBaseUrl, userEmail); // Reverted to original constructor
+    sync::ApiClient apiClient(apiBaseUrl, userEmail);
     sync::ReconciliationService reconciliationService(dbManager, syncFolder);
     sync::FileSystemScanner scanner(syncFolder);
-
+    sync::SyncWorker syncworker(dbManager, scanner, syncFolder);
     std::cout << "[Main] Database initialized." << std::endl;
     std::cout << "[Main] API Client initialized." << std::endl;
 
     // 2. Initial Scan & Local Reconciliation
     std::cout << "[Main] Performing initial filesystem scan..." << std::endl;
     sync::ScanResult scanResult = scanner.scanSyncPath(syncFolder);
-    reconciliationService.reconcileLocalState(scanResult.files, scanResult.directories);
-    std::cout << "[Main] Initial filesystem scan and local reconciliation complete." << std::endl;
-
+    reconciliationService.reconcileLocalState(scanResult.files,
+                                              scanResult.directories);
+    std::cout
+        << "[Main] Initial filesystem scan and local reconciliation complete."
+        << std::endl;
 
     // 3. Initialize Watcher
     sync::FilesystemWatcher watcher(
-        syncFolder, [&reconciliationService](const std::string &path, sync::WatchEvent event) {
+        syncFolder, [&reconciliationService, &syncworker](
+                        const std::string &path, sync::WatchEvent event) {
           std::string eventStr;
           switch (event) {
           case sync::WatchEvent::Added:
             eventStr = "Added";
+            syncworker.handleAdded(path);
             break;
           case sync::WatchEvent::Modified:
             eventStr = "Modified";
@@ -69,8 +73,10 @@ int main() {
             eventStr = "RenamedNew";
             break;
           }
-          std::cout << "[Watcher] Event: " << eventStr << " on " << path
-                    << std::endl;
+          /*          std::cout << "[Watcher] Event: " << eventStr << " on " <<
+             path
+                              << std::endl;
+                  */
         });
 
     watcher.start();
