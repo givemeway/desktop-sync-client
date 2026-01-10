@@ -4,14 +4,33 @@
 #include "FilesystemWatcher.hpp"
 #include "ReconciliationService.hpp"
 #include "SyncWorker.hpp"
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <csignal>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <thread>
 
+std::atomic<bool> running{true};
+std::mutex cv_m;
+std::condition_variable cv;
+
+static void signalHandler(int sig) {
+  std::cout << "[Main] Shutdown signal received (" << sig << ")" << std::endl;
+  running.store(false);
+  cv.notify_all();
+}
+
 namespace fs = std::filesystem;
 int main() {
+  // register shutdown signals
+
+  std::signal(SIGINT, signalHandler);
+  std::signal(SIGTERM, signalHandler);
+  std::cout << "[Main] Running. Press Ctrl+C to exit gracefully." << std::endl;
   std::cout << "Sync Client starting..." << std::endl;
 
   const std::string dbPath = "sync_client.db";
@@ -28,7 +47,7 @@ int main() {
     }
 
     // 1. Initialize Components
-    sync::DatabaseManager dbManager(dbPath);
+    sync::DatabaseManager dbManager(dbPath, syncFolder);
     if (!dbManager.open()) {
       std::cerr << "[Main] Failed to open database." << std::endl;
       return 1;
@@ -53,32 +72,36 @@ int main() {
     // 3. Initialize Watcher
     sync::FilesystemWatcher watcher(
         syncFolder, [&reconciliationService, &syncworker](
-                        const std::string &path, sync::WatchEvent event) {
+                        const std::string &path, const std::string &oldPath,
+                        sync::WatchEvent event) {
           std::string eventStr;
           switch (event) {
           case sync::WatchEvent::Added:
             eventStr = "Added";
+            std::cout << "[Watcher] Event: " << eventStr << " on " << path
+                      << std::endl;
             syncworker.handleAdded(path);
             break;
           case sync::WatchEvent::Modified:
             eventStr = "Modified";
+            std::cout << "[Watcher] Event: " << eventStr << " on " << path
+                      << std::endl;
+            syncworker.handleModified(path);
             break;
           case sync::WatchEvent::Deleted:
             eventStr = "Deleted";
+            std::cout << "[Watcher] Event: " << eventStr << " on " << path
+                      << std::endl;
+            syncworker.handleDeleted(path);
             break;
-          case sync::WatchEvent::RenamedOld:
-            eventStr = "RenamedOld";
-            break;
-          case sync::WatchEvent::RenamedNew:
-            eventStr = "RenamedNew";
+          case sync::WatchEvent::Moved:
+            eventStr = "Moved";
+            std::cout << "[Watcher] Event: " << eventStr << " on " << path
+                      << std::endl;
+            syncworker.handleRenamed(path, oldPath);
             break;
           }
-          /*          std::cout << "[Watcher] Event: " << eventStr << " on " <<
-             path
-                              << std::endl;
-                  */
         });
-
     watcher.start();
 
     // 5. Test API GetMetadata
@@ -94,8 +117,10 @@ int main() {
     std::cout << "[Main] Modify some files in the sync folder to see events."
               << std::endl;
 
-    // Keep main alive for a bit to see watcher events
-    for (int i = 0; i < 60; ++i) {
+    std::unique_lock<std::mutex> lock(cv_m);
+    cv.wait(lock, [] { return !running.load(); });
+    // Keep main alive to continue to track the sync folder
+    while (true) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 

@@ -342,11 +342,6 @@ std::vector<RenameInfo> ReconciliationService::collapseDirRenames(
 void ReconciliationService::reconcileDirRenamedCandidates(
     const std::vector<RenameInfo> &localFoldersRenamed) {
   for (const auto &dir : localFoldersRenamed) {
-    // Since we don't have prisma-style transactions yet, we'll perform these
-    // cleanup operations sequentially via dbManager This would involve deleting
-    // redundant delete/new queue entries and upserting a single 'rename' entry
-    // For now, these are placeholder routines as we'd need more specific delete
-    // methods in DatabaseManager
     std::cout << "[Reconcile] Detected Directory Rename: " << dir.oldPath
               << " -> " << dir.newPath << std::endl;
 
@@ -486,13 +481,18 @@ void ReconciliationService::reconcileLocalState(
         dq = DirectoryQueueEntry(d);
         dq.sync_status = "FILE_LINKED";
         dq.old_path = d.path;
-        m_dbManager.insertDirectoryQueue(dq);
-        m_dbManager.insertDirectory(d);
-        fq.dirID = d.uuid;
-        f.dirID = d.uuid;
+        //        m_dbManager.insertDirectoryQueue(dq);
+        auto result = m_dbManager.insertDirectory(d, dq);
+        if (result) {
+          fq.dirID = d.uuid;
+          f.dirID = d.uuid;
+        } else {
+          return;
+        }
       }
-      m_dbManager.upsertFileQueue(fq);
-      m_dbManager.upsertFile(f);
+      m_dbManager.insertFile(f, fq);
+      //      m_dbManager.upsertFileQueue(fq);
+      //    m_dbManager.upsertFile(f);
     } else {
 
       const auto &dbFile = dbFilesPathMap[key];
@@ -516,8 +516,9 @@ void ReconciliationService::reconcileLocalState(
         f.versions = dbFile.versions + 1;
         fq = FileMetadata(f);
         fq.sync_status = "modified";
-        m_dbManager.upsertFile(f);
-        m_dbManager.upsertFileQueue(fq);
+        m_dbManager.insertFile(f, fq);
+        //        m_dbManager.upsertFile(f);
+        //      m_dbManager.upsertFileQueue(fq);
       }
     }
   }
@@ -529,8 +530,8 @@ void ReconciliationService::reconcileLocalState(
       // Create FileQueueEntry from FileMetadata
       FileQueueEntry q(dbFile);
       q.sync_status = "delete";
-      m_dbManager.deleteFile(dbFile.origin);
-      m_dbManager.upsertFileQueue(q);
+      m_dbManager.deleteFile(dbFile.path, dbFile.filename, q);
+      //      m_dbManager.upsertFileQueue(q);
     }
   }
 
@@ -559,8 +560,9 @@ void ReconciliationService::reconcileLocalState(
       q.device = part.device;
       qd = DirectoryMetadata(q);
       qd.sync_status = "new";
-      m_dbManager.upsertDirectory(q);
-      m_dbManager.upsertDirectoryQueue(qd);
+      m_dbManager.insertDirectory(q, qd);
+      //      m_dbManager.upsertDirectory(q);
+      //    m_dbManager.upsertDirectoryQueue(qd);
     }
   }
 
@@ -571,8 +573,9 @@ void ReconciliationService::reconcileLocalState(
                 << std::endl;
       DirectoryQueueEntry q(dbDir);
       q.sync_status = "delete";
-      m_dbManager.deleteDirectory(dbDir.uuid);
-      m_dbManager.upsertDirectoryQueue(q);
+      m_dbManager.deleteFolderWithTransaction(dbDir.path, q);
+      // m_dbManager.deleteDirectory(dbDir.path);
+      // m_dbManager.upsertDirectoryQueue(q);
     }
   }
   auto filesInQueue = m_dbManager.getAllQueueFiles();
@@ -600,7 +603,7 @@ void ReconciliationService::reconcileLocalState(
       FileQueueEntry q(added);
       added.sync_status = "rename";
       added.old_filename = deleted.filename;
-      m_dbManager.deleteFileQueue(deleted.origin);
+      m_dbManager.deleteFileQueue(deleted.path, deleted.filename);
       m_dbManager.updateFileQueue(added);
     }
   }

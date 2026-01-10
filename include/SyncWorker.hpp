@@ -14,7 +14,7 @@ public:
   ~SyncWorker();
   void handleAdded(const std::string &path);
   void handleDeleted(const std::string &path);
-  void handleRenamed(const std::string &path);
+  void handleRenamed(const std::string &path, const std::string &oldPath);
   void handleModified(const std::string &path);
 
 private:

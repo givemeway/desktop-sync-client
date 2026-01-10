@@ -3,7 +3,6 @@
 #include <iostream>
 #include <sqlite3.h>
 #include <sqlite_orm/sqlite_orm.h>
-
 using namespace sqlite_orm;
 
 namespace sync {
@@ -32,17 +31,15 @@ inline auto create_storage_impl(const std::string &path) {
           foreign_key(&FileMetadata::dirID)
               .references(&DirectoryMetadata::uuid)),
       make_table<DirectoryMetadata>(
-          "Directory",
-          make_column("uuid", &DirectoryMetadata::uuid, primary_key()),
+          "Directory", make_column("uuid", &DirectoryMetadata::uuid, unique()),
           make_column("device", &DirectoryMetadata::device),
           make_column("folder", &DirectoryMetadata::folder),
           make_column("path", &DirectoryMetadata::path),
           make_column("created_at", &DirectoryMetadata::created_at),
           make_column("absPath", &DirectoryMetadata::absPath),
           make_column("inode", &DirectoryMetadata::inode),
-          sqlite_orm::unique(&DirectoryMetadata::device,
-                             &DirectoryMetadata::folder,
-                             &DirectoryMetadata::path)),
+          primary_key(&DirectoryMetadata::device, &DirectoryMetadata::folder,
+                      &DirectoryMetadata::path)),
       make_table<FileQueueEntry>(
           "FileQueue", make_column("uuid", &FileQueueEntry::uuid),
           make_column("path", &FileQueueEntry::path),
@@ -65,7 +62,7 @@ inline auto create_storage_impl(const std::string &path) {
               .references(&DirectoryQueueEntry::uuid)),
       make_table<DirectoryQueueEntry>(
           "DirectoryQueue",
-          make_column("uuid", &DirectoryQueueEntry::uuid, primary_key()),
+          make_column("uuid", &DirectoryQueueEntry::uuid, unique()),
           make_column("device", &DirectoryQueueEntry::device),
           make_column("folder", &DirectoryQueueEntry::folder),
           make_column("path", &DirectoryQueueEntry::path),
@@ -74,9 +71,9 @@ inline auto create_storage_impl(const std::string &path) {
           make_column("absPath", &DirectoryQueueEntry::absPath),
           make_column("old_path", &DirectoryQueueEntry::old_path),
           make_column("inode", &DirectoryQueueEntry::inode),
-          sqlite_orm::unique(&DirectoryQueueEntry::device,
-                             &DirectoryQueueEntry::folder,
-                             &DirectoryQueueEntry::path)));
+          primary_key(&DirectoryQueueEntry::device,
+                      &DirectoryQueueEntry::folder,
+                      &DirectoryQueueEntry::path)));
 }
 
 // Typedef for easier access within the Impl
@@ -87,8 +84,10 @@ struct DatabaseManager::Impl {
   Impl(const std::string &path) : storage(create_storage_impl(path)) {}
 };
 
-DatabaseManager::DatabaseManager(const std::string &dbPath)
-    : m_dbPath(dbPath), m_impl(std::make_unique<Impl>(dbPath)) {}
+DatabaseManager::DatabaseManager(const std::string &dbPath,
+                                 const std::string &syncPath)
+    : m_dbPath(dbPath), m_syncPath(syncPath),
+      m_impl(std::make_unique<Impl>(dbPath)) {}
 
 DatabaseManager::~DatabaseManager() = default;
 
@@ -169,22 +168,37 @@ std::optional<FileMetadata>
 DatabaseManager::getFileByPath(const std::string &path,
                                const std::string &filename) {
   try {
-    auto results = m_impl->storage.get_all<FileMetadata>(
-        where(c(&FileMetadata::path) == path &&
-              c(&FileMetadata::filename) == filename));
-    if (results.empty())
-      return std::nullopt;
-    return results[0];
+    return m_impl->storage.get<FileMetadata>(path, filename);
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error Fetching FileByPath :" << e.what() << "\n";
     return std::nullopt;
   }
 }
 
-bool DatabaseManager::insertFile(const FileMetadata &file) {
+std::optional<FileQueueEntry>
+DatabaseManager::getFileQueueByPath(const std::string &path,
+                                    const std::string &filename) {
   try {
-    m_impl->storage.replace(file);
-    return true;
+    auto results = m_impl->storage.get_all<FileQueueEntry>(
+        where(c(&FileQueueEntry::path) == path &&
+              c(&FileQueueEntry::filename) == filename));
+    if (results.empty())
+      return std::nullopt;
+    return results[0];
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error Fetching FileQueue : " << e.what() << std::endl;
+    return std::nullopt;
+  }
+}
+
+bool DatabaseManager::insertFile(const FileMetadata &file,
+                                 const FileQueueEntry &fileQueue) {
+  try {
+    return m_impl->storage.transaction([&]() {
+      m_impl->storage.replace<FileMetadata>(file);
+      m_impl->storage.replace<FileQueueEntry>(fileQueue);
+      return true;
+    });
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error Inserting ->" << file.absPath
               << " into File Table =>" << e.what() << std::endl;
@@ -194,7 +208,13 @@ bool DatabaseManager::insertFile(const FileMetadata &file) {
 
 bool DatabaseManager::updateFile(const FileMetadata &file) {
   try {
-    m_impl->storage.update(file);
+    auto existingFile = m_impl->storage.count<FileMetadata>(
+        where(c(&FileMetadata::path) == file.path &&
+              c(&FileMetadata::filename) == file.filename));
+
+    if (existingFile) {
+      m_impl->storage.update<FileMetadata>(file);
+    }
     return true;
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error updating ->" << file.absPath << " in File Table =>"
@@ -203,29 +223,42 @@ bool DatabaseManager::updateFile(const FileMetadata &file) {
   }
 }
 
-bool DatabaseManager::deleteFile(const std::string &origin) {
+bool DatabaseManager::deleteFile(const std::string &path,
+                                 const std::string &filename,
+                                 const FileQueueEntry &fq) {
   try {
-    auto allFiles = m_impl->storage.get_all<FileMetadata>();
-    for (const auto &f : allFiles) {
-      if (f.origin == origin) {
-        m_impl->storage.remove<FileMetadata>(f.path, f.filename);
-      }
-    }
-    return true;
+    return m_impl->storage.transaction([&] {
+      m_impl->storage.remove<FileMetadata>(path, filename);
+      m_impl->storage.replace<FileQueueEntry>(fq);
+      return true;
+    });
   } catch (const std::exception &e) {
-    std::cerr << "[DB] Error Deleting ->" << origin << " from File Table =>"
-              << e.what() << std::endl;
+    std::cerr << "[DB] Error Deleting ->" << path << "/" << filename
+              << " from File Table =>" << e.what() << std::endl;
     return false;
   }
 }
 
 bool DatabaseManager::upsertFile(const FileMetadata &file) {
   try {
-    m_impl->storage.replace(file);
+    m_impl->storage.replace<FileMetadata>(file);
     return true;
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error Upserting ->" << file.absPath
               << " into File Table =>" << e.what() << std::endl;
+    return false;
+  }
+}
+
+bool DatabaseManager::deleteFilesByPath(const std::string &path) {
+  try {
+
+    m_impl->storage.remove_all<FileMetadata>(
+        where(c(&FileMetadata::path) == path ||
+              like(&FileMetadata::path, path + "/%")));
+    return true;
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error Deleting Files By Path " << e.what() << std::endl;
     return false;
   }
 }
@@ -246,6 +279,7 @@ DatabaseManager::getDirectoryByPath(const std::string &device,
                                     const std::string &folder,
                                     const std::string &path) {
   try {
+
     auto results = m_impl->storage.get_all<DirectoryMetadata>(
         where(c(&DirectoryMetadata::device) == device &&
               c(&DirectoryMetadata::folder) == folder &&
@@ -260,10 +294,28 @@ DatabaseManager::getDirectoryByPath(const std::string &device,
   }
 }
 
-bool DatabaseManager::insertDirectory(const DirectoryMetadata &dir) {
+std::optional<std::vector<FileMetadata>>
+DatabaseManager::getAllFilesInDirectory(const std::string &path) {
   try {
-    m_impl->storage.replace(dir);
-    return true;
+
+    return m_impl->storage.get_all<FileMetadata>(
+        where(c(&FileMetadata::path) == path ||
+              like(&FileMetadata::path, path + "/%")));
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error fetching from ->" << path << " " << e.what()
+              << std::endl;
+    return std::nullopt;
+  }
+}
+
+bool DatabaseManager::insertDirectory(const DirectoryMetadata &dir,
+                                      const DirectoryQueueEntry &dirQueue) {
+  try {
+    return m_impl->storage.transaction([&] {
+      m_impl->storage.replace<DirectoryMetadata>(dir);
+      m_impl->storage.replace<DirectoryQueueEntry>(dirQueue);
+      return true;
+    });
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error inserting ->" << dir.path
               << " into Directory Table =>" << e.what() << std::endl;
@@ -273,7 +325,7 @@ bool DatabaseManager::insertDirectory(const DirectoryMetadata &dir) {
 
 bool DatabaseManager::updateDirectory(const DirectoryMetadata &dir) {
   try {
-    m_impl->storage.update(dir);
+    m_impl->storage.update<DirectoryMetadata>(dir);
     return true;
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error updating ->" << dir.path
@@ -282,13 +334,107 @@ bool DatabaseManager::updateDirectory(const DirectoryMetadata &dir) {
   }
 }
 
-bool DatabaseManager::deleteDirectory(const std::string &uuid) {
+bool DatabaseManager::deleteDirectory(const std::string &path) {
   try {
-    m_impl->storage.remove<DirectoryMetadata>(uuid);
+    m_impl->storage.remove_all<DirectoryMetadata>(
+        where(c(&DirectoryMetadata::path) == path ||
+              like(&DirectoryMetadata::path, path + "/%")));
     return true;
   } catch (const std::exception &e) {
-    std::cerr << "[DB] Error deleting ->" << uuid << " from Directory Table =>"
+    std::cerr << "[DB] Error deleting ->" << path << " from Directory Table =>"
               << e.what() << std::endl;
+    return false;
+  }
+}
+
+bool DatabaseManager::deleteFolderWithTransaction(
+    const std::string &path, const DirectoryQueueEntry &dq) {
+  try {
+    return m_impl->storage.transaction([&]() {
+      m_impl->storage.remove_all<FileMetadata>(
+          where(c(&FileMetadata::path) == path ||
+                like(&FileMetadata::path, path + "/%")));
+      m_impl->storage.remove_all<DirectoryMetadata>(
+          where(c(&DirectoryMetadata::path) == path ||
+                like(&DirectoryMetadata::path, path + "/%")));
+      std::vector<DirectoryQueueEntry> queueDirs =
+          m_impl->storage.get_all<DirectoryQueueEntry>(
+              where(c(&DirectoryQueueEntry::path) == path ||
+                    like(&DirectoryQueueEntry::path, path + "/%")));
+      if (queueDirs.size() > 0) {
+        m_impl->storage.remove_all<FileQueueEntry>(
+            where(c(&FileQueueEntry::path) == path ||
+                  like(&FileQueueEntry::path, path + "/%")));
+        m_impl->storage.remove_all<DirectoryQueueEntry>(
+            where(c(&DirectoryQueueEntry::path) == path ||
+                  like(&DirectoryQueueEntry::path, path + "/%")));
+      }
+      m_impl->storage.replace<DirectoryQueueEntry>(dq);
+      return true; // Commit
+    });
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error Deleting Folder Transaction ->" << path << " "
+              << e.what() << std::endl;
+    return false;
+  }
+}
+
+bool DatabaseManager::moveDirectory(const std::string &path,
+                                    const std::string &oldPath,
+                                    const DirectoryQueueEntry &dq) {
+  try {
+    return m_impl->storage.transaction([&]() {
+      auto subDirs = m_impl->storage.get_all<DirectoryMetadata>(
+          where(c(&DirectoryMetadata::path) == oldPath ||
+                like(&DirectoryMetadata::path, oldPath + "/%")));
+      for (auto &dir : subDirs) {
+        auto dirFiles = m_impl->storage.get_all<FileMetadata>(
+            where(c(&FileMetadata::dirID) == dir.uuid));
+        std::string movedSegment(
+            std::filesystem::relative(dir.path, oldPath).generic_string());
+        DirectoryMetadata d(dir);
+        std::string newPath;
+        if (movedSegment != ".") {
+          newPath = path + "/" + movedSegment;
+        } else {
+          newPath = path;
+        }
+        pathParts p = getFolderDevice(newPath);
+        std::string absPath = m_syncPath + newPath;
+        d.absPath = absPath;
+        d.path = newPath;
+        d.folder = p.folder;
+        d.device = p.device;
+        if (dirFiles.size() > 0) {
+          // update the files
+          for (auto &file : dirFiles) {
+            FileMetadata f(file);
+            f.absPath = absPath == "/" ? "/" + file.filename
+                                       : absPath + "/" + file.filename;
+            f.path = newPath;
+            m_impl->storage.replace<FileMetadata>(f);
+          }
+        }
+        // update directory
+        m_impl->storage.replace<DirectoryMetadata>(d);
+      }
+      std::vector<DirectoryQueueEntry> queueDirs =
+          m_impl->storage.get_all<DirectoryQueueEntry>(
+              where(c(&DirectoryQueueEntry::path) == oldPath ||
+                    like(&DirectoryQueueEntry::path, oldPath + "/%")));
+      if (queueDirs.size() > 0) {
+        m_impl->storage.remove_all<FileQueueEntry>(
+            where(c(&FileQueueEntry::path) == oldPath ||
+                  like(&FileQueueEntry::path, oldPath + "/%")));
+        m_impl->storage.remove_all<DirectoryQueueEntry>(
+            where(c(&DirectoryQueueEntry::path) == oldPath ||
+                  like(&DirectoryQueueEntry::path, oldPath + "/%")));
+      }
+      m_impl->storage.replace<DirectoryQueueEntry>(dq);
+      return true;
+    });
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error Moving Directory ->" << e.what() << std::endl;
     return false;
   }
 }
@@ -296,7 +442,7 @@ bool DatabaseManager::deleteDirectory(const std::string &uuid) {
 bool DatabaseManager::upsertDirectory(const DirectoryMetadata &dir) {
   try {
     // Optimized check by (device, folder, path) using where clause
-    m_impl->storage.replace(dir);
+    m_impl->storage.replace<DirectoryMetadata>(dir);
     return true;
   } catch (const std::exception &e) {
     std::cerr << "[DB] upsertDirectory Error: " << e.what() << std::endl;
@@ -306,7 +452,7 @@ bool DatabaseManager::upsertDirectory(const DirectoryMetadata &dir) {
 
 bool DatabaseManager::upsertFileQueue(const FileQueueEntry &entry) {
   try {
-    m_impl->storage.replace(entry);
+    m_impl->storage.replace<FileQueueEntry>(entry);
     return true;
   } catch (const std::exception &e) {
     std::cerr << "[DB] upsertFileQueue Error: " << e.what() << std::endl;
@@ -320,10 +466,55 @@ bool DatabaseManager::upsertFileQueue(const FileQueueEntry &entry) {
 bool DatabaseManager::upsertDirectoryQueue(const DirectoryQueueEntry &entry) {
   try {
     // Optimized check by (device, folder, path) using where clause
-    m_impl->storage.replace(entry);
+    m_impl->storage.replace<DirectoryQueueEntry>(entry);
     return true;
   } catch (const std::exception &e) {
     std::cerr << "[DB] upsertDirectoryQueue Error: " << e.what() << std::endl;
+    return false;
+  }
+}
+bool DatabaseManager::moveDirectoryQueue(const std::string &path,
+                                         const std::string &oldPath) {
+  try {
+    return m_impl->storage.transaction([&]() {
+      auto subDirs = m_impl->storage.get_all<DirectoryMetadata>(
+          where(c(&DirectoryMetadata::path) == oldPath ||
+                like(&DirectoryMetadata::path, oldPath + "/%")));
+      for (auto &dir : subDirs) {
+        auto dirFiles = m_impl->storage.get_all<FileMetadata>(
+            where(c(&FileMetadata::dirID) == dir.uuid));
+        std::string movedSegment(
+            std::filesystem::relative(dir.path, oldPath).generic_string());
+        DirectoryMetadata d(dir);
+        std::string newPath;
+        if (movedSegment != ".") {
+          newPath = path + "/" + movedSegment;
+        } else {
+          newPath = path;
+        }
+        pathParts p = getFolderDevice(newPath);
+        std::string absPath = m_syncPath + newPath;
+        d.absPath = absPath;
+        d.path = newPath;
+        d.folder = p.folder;
+        d.device = p.device;
+        if (dirFiles.size() > 0) {
+          // update the files
+          for (auto &file : dirFiles) {
+            FileMetadata f(file);
+            f.absPath = absPath == "/" ? "/" + file.filename
+                                       : absPath + "/" + file.filename;
+            f.path = newPath;
+            m_impl->storage.update<FileMetadata>(f);
+          }
+        }
+        // update directory
+        m_impl->storage.update<DirectoryMetadata>(d);
+      }
+      return true;
+    });
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error Moving Directory ->" << e.what() << std::endl;
     return false;
   }
 }
@@ -339,7 +530,7 @@ std::optional<std::vector<FileQueueEntry>> DatabaseManager::getFileQueue() {
 
 bool DatabaseManager::insertFileQueue(const FileQueueEntry &entry) {
   try {
-    m_impl->storage.replace(entry);
+    m_impl->storage.replace<FileQueueEntry>(entry);
     return true;
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error inserting ->" << entry.absPath
@@ -350,7 +541,7 @@ bool DatabaseManager::insertFileQueue(const FileQueueEntry &entry) {
 
 bool DatabaseManager::updateFileQueue(const FileQueueEntry &entry) {
   try {
-    m_impl->storage.update(entry);
+    m_impl->storage.update<FileQueueEntry>(entry);
     return true;
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error updating ->" << entry.absPath
@@ -369,17 +560,13 @@ DatabaseManager::getAllQueueDirectories() {
   }
 }
 
-bool DatabaseManager::deleteFileQueue(const std::string &origin) {
+bool DatabaseManager::deleteFileQueue(const std::string &path,
+                                      const std::string &filename) {
   try {
-    auto allEntries = m_impl->storage.get_all<FileQueueEntry>();
-    for (const auto &e : allEntries) {
-      if (e.origin == origin) {
-        m_impl->storage.remove<FileQueueEntry>(e.path, e.filename);
-      }
-    }
+    m_impl->storage.remove<FileQueueEntry>(path, filename);
     return true;
   } catch (const std::exception &e) {
-    std::cerr << "[DB] Error deleting ->" << origin
+    std::cerr << "[DB] Error deleting ->" << path << "/" << filename
               << " from FileQueue Table =>" << e.what() << std::endl;
     return false;
   }
@@ -402,7 +589,7 @@ DatabaseManager::getDirectoryQueue() {
 
 bool DatabaseManager::insertDirectoryQueue(const DirectoryQueueEntry &entry) {
   try {
-    m_impl->storage.replace(entry);
+    m_impl->storage.replace<DirectoryQueueEntry>(entry);
     return true;
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error inserting ->" << entry.absPath
@@ -413,7 +600,7 @@ bool DatabaseManager::insertDirectoryQueue(const DirectoryQueueEntry &entry) {
 
 bool DatabaseManager::updateDirectoryQueue(const DirectoryQueueEntry &entry) {
   try {
-    m_impl->storage.update(entry);
+    m_impl->storage.update<DirectoryQueueEntry>(entry);
     return true;
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error updating ->" << entry.absPath
@@ -424,7 +611,8 @@ bool DatabaseManager::updateDirectoryQueue(const DirectoryQueueEntry &entry) {
 
 bool DatabaseManager::deleteDirectoryQueue(const std::string &uuid) {
   try {
-    m_impl->storage.remove<DirectoryQueueEntry>(uuid);
+    m_impl->storage.remove<DirectoryQueueEntry>(
+        where(c(&DirectoryQueueEntry::uuid) == uuid));
     return true;
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error deleting ->" << uuid

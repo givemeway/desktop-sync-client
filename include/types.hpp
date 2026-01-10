@@ -60,25 +60,38 @@ struct FileQueueEntry : public FileMetadata {
   std::string sync_status;
   std::optional<std::string> old_path;
   std::optional<std::string> old_filename;
-  
+  // Shadowed fields to give unique memory pointer addresses for sqlite_orm
+  std::string uuid;
+  std::string path;
+  std::string dirID;
+  std::string filename;
+  std::string origin;
+
   // Default constructor
   FileQueueEntry() = default;
-  
-  // Constructor from FileMetadata (similar to spread operator)
-  FileQueueEntry(const FileMetadata& f) 
-    : FileMetadata(f) {}
+
+  // Constructor from FileMetadata (ensure shadowed fields are copied)
+  FileQueueEntry(const FileMetadata &f)
+      : FileMetadata(f), uuid(f.uuid), path(f.path), dirID(f.dirID),
+        filename(f.filename), origin(f.origin) {}
 };
 
 struct DirectoryQueueEntry : public DirectoryMetadata {
   std::string sync_status;
   std::optional<std::string> old_path;
-  
+
+  // Shadowed fields to give unique memory pointer addresses for sqlite_orm
+  std::string uuid;
+  std::string path;
+  std::string folder;
+  std::string device;
   // Default constructor
   DirectoryQueueEntry() = default;
-  
-  // Constructor from DirectoryMetadata (similar to spread operator)
-  DirectoryQueueEntry(const DirectoryMetadata& d) 
-    : DirectoryMetadata(d) {}
+
+  // Constructor from DirectoryMetadata (ensure shadowed fields are copied)
+  DirectoryQueueEntry(const DirectoryMetadata &d)
+      : DirectoryMetadata(d), uuid(d.uuid), path(d.path), device(d.device),
+        folder(d.folder) {}
 };
 
 struct CloudFileMetadata {
