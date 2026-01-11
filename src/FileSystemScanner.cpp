@@ -16,7 +16,7 @@
 
 namespace fs = std::filesystem;
 
-namespace sync {
+namespace sync_app {
 
 FileSystemScanner::FileSystemScanner(std::string syncPath)
     : m_syncPath(syncPath) {}
@@ -140,4 +140,4 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
   return result;
 }
 
-} // namespace sync
+} // namespace sync_app

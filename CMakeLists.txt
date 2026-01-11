@@ -1,8 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-# Set compilers before project() call
-set(CMAKE_C_COMPILER gcc)
-set(CMAKE_CXX_COMPILER g++)
+# Removed hardcoded compilers to allow CMake to detect the system default (e.g., clang on Mac, gcc on Linux)
 
 project(SyncClientCpp VERSION 0.1.0 LANGUAGES CXX C)
 

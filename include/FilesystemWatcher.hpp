@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 
-namespace sync {
+namespace sync_app {
 
 /**
  * FilesystemEvent represents a change in the filesystem.
@@ -32,4 +32,4 @@ private:
   Callback m_callback;
 };
 
-} // namespace sync
+} // namespace sync_app

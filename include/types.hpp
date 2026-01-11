@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace sync {
+namespace sync_app {
 
 struct ScannedFile {
   std::string path; // Relative path from sync root (e.g. "/foo/bar.txt")
@@ -179,4 +179,4 @@ inline void from_json(const nlohmann::json &j, CloudFolderMetadata &f) {
   f.created_at = j.value("created_at", "");
 }
 
-} // namespace sync
+} // namespace sync_app

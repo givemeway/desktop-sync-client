@@ -5,7 +5,7 @@
 #ifndef SYNC_WORKER_HPP
 #define SYNC_WORKER_HPP
 
-namespace sync {
+namespace sync_app {
 
 class SyncWorker {
 public:
@@ -23,5 +23,5 @@ private:
   std::string m_syncPath;
 };
 
-} // namespace sync
+} // namespace sync_app
 #endif

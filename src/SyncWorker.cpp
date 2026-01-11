@@ -7,7 +7,7 @@
 #include <string>
 namespace fs = std::filesystem;
 
-namespace sync {
+namespace sync_app {
 
 SyncWorker::SyncWorker(DatabaseManager &dbManager, FileSystemScanner &scanner,
                        const std::string &syncPath)
@@ -287,4 +287,4 @@ void SyncWorker::handleModified(const std::string &path) {
   }
 };
 
-} // namespace sync
+} // namespace sync_app

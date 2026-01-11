@@ -14,7 +14,7 @@
 
 namespace fs = std::filesystem;
 
-namespace sync {
+namespace sync_app {
 
 enum class SettleState { Polling, Settling };
 
@@ -252,4 +252,4 @@ void FilesystemWatcher::stop() {
   std::cout << "[Watcher] Stopped monitoring: " << m_path << std::endl;
 }
 
-} // namespace sync
+} // namespace sync_app

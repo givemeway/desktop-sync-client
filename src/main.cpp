@@ -17,6 +17,15 @@
 std::atomic<bool> running{true};
 std::mutex cv_m;
 std::condition_variable cv;
+const std::string dbPath = "sync_client.db";
+#ifdef _WIN32
+const std::string syncFolder = "C:/Users/Sandeep Kumar/Desktop/sync_folder";
+#else
+const std::string syncFolder = "/users/sandeep/Desktop/sync-folder";
+#endif
+
+const std::string apiBaseUrl = "localhost:3001";
+const std::string userEmail = "sand.kumar.gr@gmail.com";
 
 static void signalHandler(int sig) {
   std::cout << "[Main] Shutdown signal received (" << sig << ")" << std::endl;
@@ -33,11 +42,6 @@ int main() {
   std::cout << "[Main] Running. Press Ctrl+C to exit gracefully." << std::endl;
   std::cout << "Sync Client starting..." << std::endl;
 
-  const std::string dbPath = "sync_client.db";
-  const std::string syncFolder = "C:/Users/Sandeep Kumar/Desktop/sync_folder";
-  const std::string apiBaseUrl = "localhost:3001";
-  const std::string userEmail = "sand.kumar.gr@gmail.com";
-
   try {
     // 0. Ensure sync folder exists
     if (!fs::exists(syncFolder)) {
@@ -47,22 +51,23 @@ int main() {
     }
 
     // 1. Initialize Components
-    sync::DatabaseManager dbManager(dbPath, syncFolder);
+    sync_app::DatabaseManager dbManager(dbPath, syncFolder);
     if (!dbManager.open()) {
       std::cerr << "[Main] Failed to open database." << std::endl;
       return 1;
     }
     dbManager.initializeSchema();
-    sync::ApiClient apiClient(apiBaseUrl, userEmail);
-    sync::ReconciliationService reconciliationService(dbManager, syncFolder);
-    sync::FileSystemScanner scanner(syncFolder);
-    sync::SyncWorker syncworker(dbManager, scanner, syncFolder);
+    sync_app::ApiClient apiClient(apiBaseUrl, userEmail);
+    sync_app::ReconciliationService reconciliationService(dbManager,
+                                                          syncFolder);
+    sync_app::FileSystemScanner scanner(syncFolder);
+    sync_app::SyncWorker syncworker(dbManager, scanner, syncFolder);
     std::cout << "[Main] Database initialized." << std::endl;
     std::cout << "[Main] API Client initialized." << std::endl;
 
     // 2. Initial Scan & Local Reconciliation
     std::cout << "[Main] Performing initial filesystem scan..." << std::endl;
-    sync::ScanResult scanResult = scanner.scanSyncPath(syncFolder);
+    sync_app::ScanResult scanResult = scanner.scanSyncPath(syncFolder);
     reconciliationService.reconcileLocalState(scanResult.files,
                                               scanResult.directories);
     std::cout
@@ -70,31 +75,31 @@ int main() {
         << std::endl;
 
     // 3. Initialize Watcher
-    sync::FilesystemWatcher watcher(
+    sync_app::FilesystemWatcher watcher(
         syncFolder, [&reconciliationService, &syncworker](
                         const std::string &path, const std::string &oldPath,
-                        sync::WatchEvent event) {
+                        sync_app::WatchEvent event) {
           std::string eventStr;
           switch (event) {
-          case sync::WatchEvent::Added:
+          case sync_app::WatchEvent::Added:
             eventStr = "Added";
             std::cout << "[Watcher] Event: " << eventStr << " on " << path
                       << std::endl;
             syncworker.handleAdded(path);
             break;
-          case sync::WatchEvent::Modified:
+          case sync_app::WatchEvent::Modified:
             eventStr = "Modified";
             std::cout << "[Watcher] Event: " << eventStr << " on " << path
                       << std::endl;
             syncworker.handleModified(path);
             break;
-          case sync::WatchEvent::Deleted:
+          case sync_app::WatchEvent::Deleted:
             eventStr = "Deleted";
             std::cout << "[Watcher] Event: " << eventStr << " on " << path
                       << std::endl;
             syncworker.handleDeleted(path);
             break;
-          case sync::WatchEvent::Moved:
+          case sync_app::WatchEvent::Moved:
             eventStr = "Moved";
             std::cout << "[Watcher] Event: " << eventStr << " on " << path
                       << std::endl;

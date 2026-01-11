@@ -5,7 +5,7 @@
 #include <sqlite_orm/sqlite_orm.h>
 using namespace sqlite_orm;
 
-namespace sync {
+namespace sync_app {
 
 // We define a helper function to create the storage.
 // This helps us deduce the complex template type of the storage.
@@ -621,4 +621,4 @@ bool DatabaseManager::deleteDirectoryQueue(const std::string &uuid) {
   }
 }
 
-} // namespace sync
+} // namespace sync_app

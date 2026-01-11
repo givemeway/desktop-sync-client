@@ -5,7 +5,7 @@
 #include <iostream>
 #include <sstream>
 
-namespace sync {
+namespace sync_app {
 
 ReconciliationService::ReconciliationService(DatabaseManager &dbManager,
                                              const std::string &syncPath)
@@ -609,4 +609,4 @@ void ReconciliationService::reconcileLocalState(
   }
 }
 
-} // namespace sync
+} // namespace sync_app

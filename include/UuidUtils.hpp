@@ -2,7 +2,7 @@
 #include <random>
 #include <sstream>
 
-namespace sync {
+namespace sync_app {
 
 class UuidUtils {
 public:
@@ -39,4 +39,4 @@ public:
     }
 };
 
-} // namespace sync
+} // namespace sync_app

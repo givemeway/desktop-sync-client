@@ -4,7 +4,7 @@
 #include "types.hpp"
 #include <filesystem>
 #include <string>
-namespace sync {
+namespace sync_app {
 class FileSystemScanner {
 public:
   FileSystemScanner(std::string syncPath);
@@ -21,6 +21,6 @@ private:
   std::string calculateHash(const std::string &absPath);
 };
 
-} // namespace sync
+} // namespace sync_app
 
 #endif // FILESYSTEMSCANNER_HPP

@@ -8,7 +8,7 @@
 
 using json = nlohmann::json;
 
-namespace sync {
+namespace sync_app {
 
 // Helper for URL encoding
 std::string urlEncode(const std::string &value) {
@@ -245,4 +245,4 @@ ApiClient::PathParts ApiClient::parsePath(const std::string &path) {
   return {device, directory};
 }
 
-} // namespace sync
+} // namespace sync_app

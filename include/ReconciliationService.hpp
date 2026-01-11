@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace sync {
+namespace sync_app {
 
 struct RenameInfo {
   std::string inode;
@@ -70,4 +70,4 @@ struct PathDiff {
   std::optional<std::string> newSegment;
 };
 
-} // namespace sync
+} // namespace sync_app

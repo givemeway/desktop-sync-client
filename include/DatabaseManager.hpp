@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace sync {
+namespace sync_app {
 struct pathParts {
   std::string device;
   std::string folder;
@@ -78,4 +78,4 @@ private:
   std::unique_ptr<Impl> m_impl;
 };
 
-} // namespace sync
+} // namespace sync_app

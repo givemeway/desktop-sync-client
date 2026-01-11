@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace sync {
+namespace sync_app {
 
 /**
  * ApiClient handles communication with the sync server.
@@ -48,4 +48,4 @@ private:
   PathParts parsePath(const std::string &path);
 };
 
-} // namespace sync
+} // namespace sync_app
