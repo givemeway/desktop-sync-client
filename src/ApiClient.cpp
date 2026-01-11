@@ -49,71 +49,46 @@ ApiClient::ApiClient(const std::string &baseUrl, const std::string &userEmail)
 ApiClient::~ApiClient() = default;
 
 std::optional<CloudMetadataResult> ApiClient::getMetadata() {
-  std::string path = "/getSyncItems?username=" + urlEncode(m_userEmail);
+  std::string path =
+      "/app/sync/getSyncItems?username=" + urlEncode(m_userEmail);
   auto res = m_impl->client.Get(path.c_str());
-
+  std::cout << "[API] url ->" << path << std::endl;
   if (res && res->status == 200) {
-    try {
-      auto data = json::parse(res->body);
-      CloudMetadataResult result;
+    auto data = json::parse(res->body);
+    std::cout << "[API] Get request Successful!! Parsing Body..." << std::endl;
+    CloudMetadataResult result;
+    if (data.is_object() && data.contains("items") &&
+        data["items"].is_array()) {
       result.success = true;
-
       for (const auto &item : data["items"]) {
-        if (item["type"] == "file") {
-          CloudFileMetadata file;
-          file.uuid = item["uuid"];
-          file.filename = item["filename"];
-          file.path = "/"; // Fallback
-          if (item.contains("device") && item.contains("directory")) {
-            std::string device = item["device"];
-            std::string directory = item["directory"];
-            if (device == "/")
-              file.path = "/";
-            else if (directory == "/")
-              file.path = "/" + device;
-            else
-              file.path = "/" + device + "/" + directory;
-          }
-          file.origin = item["origin"];
-          file.hashvalue = item["checksum"];
-          file.size = item["size"];
-          file.last_modified = item["mtime"];
-          file.versions = item["version"];
-          if (item.contains("conflictId") && !item["conflictId"].is_null()) {
-            file.conflictId = item["conflictId"].get<std::string>();
-          }
-          result.files.push_back(file);
-        } else {
-          CloudFolderMetadata folder;
-          folder.uuid = item["uuid"];
-          folder.device = item["device"];
-          folder.folder = item["folder"];
-          folder.path = item["path"];
-          if (item.contains("created_at"))
-            folder.created_at = item["created_at"];
-          result.directories.push_back(folder);
+        std::string type = item.value("type", "");
+        if (type == "file") {
+          result.files.push_back(item.get<CloudFileMetadata>());
+        } else if (type == "folder") {
+          result.directories.push_back(item.get<CloudFolderMetadata>());
         }
       }
       return result;
-    } catch (const std::exception &e) {
-      std::cerr << "[API] JSON Parse Error: " << e.what() << std::endl;
+    } else {
+      std::cout << "[API] Parsing Error -> Assertion Failed" << std::endl;
+      return std::nullopt;
     }
+
   } else {
-    std::cerr << "[API] Request failed with status: "
-              << (res ? res->status : -1) << std::endl;
+    std::cerr << "[API] Request failed -> " << res.error() << std::endl;
+    return std::nullopt;
   }
-  return std::nullopt;
 }
 
 bool ApiClient::downloadFile(const CloudFileMetadata &file,
                              const std::string &localAbsPath) {
   auto parts = parsePath(file.path);
 
-  std::string query = "/syncDownFile?file=" + urlEncode(file.filename) +
-                      "&dir=" + urlEncode(parts.directory) +
-                      "&device=" + urlEncode(parts.device) +
-                      "&uuid=" + urlEncode(file.uuid) +
-                      "&db=file&username=" + urlEncode(m_userEmail);
+  std::string query =
+      "/app/sync/syncDownFile?file=" + urlEncode(file.filename) +
+      "&dir=" + urlEncode(parts.directory) +
+      "&device=" + urlEncode(parts.device) + "&uuid=" + urlEncode(file.uuid) +
+      "&db=file&username=" + urlEncode(m_userEmail);
 
   std::ofstream ofs(localAbsPath, std::ios::binary);
   if (!ofs)

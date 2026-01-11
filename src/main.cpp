@@ -35,7 +35,7 @@ int main() {
 
   const std::string dbPath = "sync_client.db";
   const std::string syncFolder = "C:/Users/Sandeep Kumar/Desktop/sync_folder";
-  const std::string apiBaseUrl = "http://localhost:3000";
+  const std::string apiBaseUrl = "localhost:3001";
   const std::string userEmail = "sand.kumar.gr@gmail.com";
 
   try {

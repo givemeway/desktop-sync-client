@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <vector>
@@ -156,5 +157,26 @@ struct FileUploadMetadata {
   int64_t size;
   std::string hashvalue;
 };
+
+inline void from_json(const nlohmann::json &j, CloudFileMetadata &f) {
+  f.uuid = j.value("uuid", "");
+  f.path = j.value("path", "/");
+  f.filename = j.value("filename", "");
+  f.last_modified = j.value("mtime", "");
+  f.hashvalue = j.value("checksum", "");
+  f.lastSyncedHashValue = f.hashvalue;
+  f.size = j.value("size", 0LL);
+  f.origin = j.value("origin", "");
+  f.versions = j.value("versions", 1);
+  f.conflictId = j.value("conflictId", "");
+}
+
+inline void from_json(const nlohmann::json &j, CloudFolderMetadata &f) {
+  f.uuid = j.value("uuid", "");
+  f.device = j.value("device", "");
+  f.folder = j.value("folder", "");
+  f.path = j.value("path", "/");
+  f.created_at = j.value("created_at", "");
+}
 
 } // namespace sync
