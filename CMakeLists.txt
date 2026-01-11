@@ -37,6 +37,7 @@ add_executable(sync_client
 if(WIN32)
     # Required for cpp-httplib on Windows
     target_link_libraries(sync_client sqlite3 efsw-static ws2_32 crypt32)
+    target_link_options(sync_client PRIVATE -static-libgcc -static-libstdc++ -static)
 else()
     target_link_libraries(sync_client sqlite3 efsw-static pthread)
 endif()

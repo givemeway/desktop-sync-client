@@ -41,7 +41,6 @@ int main() {
   std::signal(SIGTERM, signalHandler);
   std::cout << "[Main] Running. Press Ctrl+C to exit gracefully." << std::endl;
   std::cout << "Sync Client starting..." << std::endl;
-
   try {
     // 0. Ensure sync folder exists
     if (!fs::exists(syncFolder)) {

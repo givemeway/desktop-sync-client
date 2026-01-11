@@ -445,9 +445,9 @@ void ReconciliationService::reconcileLocalState(
       fq.old_path = sFile.path;
 
       pathParts part = m_dbManager.getFolderDevice(f.path);
-      std::cout << "[Reconcile] " << "device : " << part.device
-                << " folder: " << part.folder << " path: " << f.path
-                << std::endl;
+      std::cout << "[Reconcile] "
+                << "device : " << part.device << " folder: " << part.folder
+                << " path: " << f.path << std::endl;
       auto dir =
           m_dbManager.getDirectoryByPath(part.device, part.folder, f.path);
       std::cout << "[Reconcile] dir value exists : " << dir.has_value()
