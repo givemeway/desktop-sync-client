@@ -101,6 +101,7 @@ struct CloudFileMetadata {
   std::string filename;
   std::string last_modified;
   std::string hashvalue;
+  std::string dirID;
   int64_t size;
   std::string origin;
   std::string lastSyncedHashValue;
@@ -160,10 +161,11 @@ struct FileUploadMetadata {
 
 inline void from_json(const nlohmann::json &j, CloudFileMetadata &f) {
   f.uuid = j.value("uuid", "");
+  f.dirID = j.value("dirID", "");
   f.path = j.value("path", "/");
   f.filename = j.value("filename", "");
-  f.last_modified = j.value("mtime", "");
-  f.hashvalue = j.value("checksum", "");
+  f.last_modified = j.value("last_modified", "");
+  f.hashvalue = j.value("hashvalue", "");
   f.lastSyncedHashValue = f.hashvalue;
   f.size = j.value("size", 0LL);
   f.origin = j.value("origin", "");

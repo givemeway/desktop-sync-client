@@ -2,10 +2,10 @@
 #include "types.hpp"
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
-
 namespace sync_app {
 struct pathParts {
   std::string device;
@@ -44,6 +44,9 @@ public:
   std::optional<DirectoryMetadata> getDirectoryByPath(const std::string &device,
                                                       const std::string &folder,
                                                       const std::string &path);
+  bool
+  insertFileWithDirectory(FileMetadata &f,
+                          const std::vector<DirectoryMetadata> &pathComponents);
   bool moveDirectory(const std::string &path, const std::string &oldPath,
                      const DirectoryQueueEntry &dq);
   bool insertDirectory(const DirectoryMetadata &dir,
@@ -71,11 +74,14 @@ public:
 
   pathParts getFolderDevice(const std::filesystem::path &path);
 
+  std::recursive_mutex &getSyncMutex();
+
 private:
   std::string m_dbPath;
   std::string m_syncPath;
   struct Impl;
   std::unique_ptr<Impl> m_impl;
+  std::recursive_mutex m_syncMutex;
 };
 
 } // namespace sync_app

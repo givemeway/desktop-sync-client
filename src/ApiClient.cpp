@@ -83,6 +83,7 @@ std::optional<CloudMetadataResult> ApiClient::getMetadata() {
 bool ApiClient::downloadFile(const CloudFileMetadata &file,
                              const std::string &localAbsPath) {
   auto parts = parsePath(file.path);
+  std::string mtime;
 
   std::string query =
       "/app/sync/syncDownFile?file=" + urlEncode(file.filename) +
@@ -90,16 +91,45 @@ bool ApiClient::downloadFile(const CloudFileMetadata &file,
       "&device=" + urlEncode(parts.device) + "&uuid=" + urlEncode(file.uuid) +
       "&db=file&username=" + urlEncode(m_userEmail);
 
-  std::ofstream ofs(localAbsPath, std::ios::binary);
-  if (!ofs)
+  std::string filePath(
+      std::filesystem::path(localAbsPath).parent_path().generic_string());
+  try {
+    if (!std::filesystem::exists(filePath)) {
+      std::filesystem::create_directories(filePath);
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "[API] Unable to create Directory ->" << filePath
+              << " Error: " << e.what() << std::endl;
     return false;
+  }
+  std::ofstream ofs(localAbsPath, std::ios::binary);
 
-  auto res = m_impl->client.Get(query.c_str(),
-                                [&](const char *data, size_t data_length) {
-                                  ofs.write(data, data_length);
-                                  return true;
-                                });
+  if (!ofs) {
+    std::cerr << "[API] exception " << ofs.exceptions()
+              << " opening the file -> " << localAbsPath << std::endl;
+    return false;
+  }
 
+  auto res = m_impl->client.Get(
+      query.c_str(),
+      [&mtime](const httplib::Response &response) {
+        if (response.status != 200) {
+          std::cerr << "[API] Response failed. Status Code: " << response.status
+                    << std::endl;
+          return false;
+        }
+        mtime = response.get_header_value("mtime");
+        if (mtime.empty()) {
+          std::cerr << "[API] Missing mtime header" << std::endl;
+          return false;
+        }
+        return true;
+      },
+      [&](const char *data, size_t data_length) {
+        ofs.write(data, data_length);
+        return true;
+      });
+  ofs.close();
   return res && res->status == 200;
 }
 
@@ -235,7 +265,7 @@ ApiClient::PathParts ApiClient::parsePath(const std::string &path) {
     return {"/", "/"};
 
   std::string device = parts[0];
-  std::string directory = "/";
+  std::string directory = "";
   if (parts.size() > 1) {
     for (size_t i = 1; i < parts.size(); ++i) {
       directory += parts[i] + (i == parts.size() - 1 ? "" : "/");

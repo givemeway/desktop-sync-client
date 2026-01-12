@@ -1,18 +1,17 @@
 #include "ApiClient.hpp"
+#include "CloudSyncWorker.hpp"
 #include "DatabaseManager.hpp"
 #include "FileSystemScanner.hpp"
 #include "FilesystemWatcher.hpp"
 #include "ReconciliationService.hpp"
 #include "SyncWorker.hpp"
 #include <atomic>
-#include <chrono>
 #include <condition_variable>
 #include <csignal>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
 #include <string>
-#include <thread>
 
 std::atomic<bool> running{true};
 std::mutex cv_m;
@@ -61,6 +60,9 @@ int main() {
                                                           syncFolder);
     sync_app::FileSystemScanner scanner(syncFolder);
     sync_app::SyncWorker syncworker(dbManager, scanner, syncFolder);
+    sync_app::CloudSyncWorker cloudSync(dbManager, apiClient,
+                                        reconciliationService, scanner,
+                                        syncFolder, userEmail);
     std::cout << "[Main] Database initialized." << std::endl;
     std::cout << "[Main] API Client initialized." << std::endl;
 
@@ -108,26 +110,22 @@ int main() {
         });
     watcher.start();
 
-    // 5. Test API GetMetadata
-    std::cout << "[Main] Fetching cloud metadata..." << std::endl;
-    auto result = apiClient.getMetadata();
-    if (result && result->success) {
-      std::cout << "[Main] Found " << result->files.size() << " files and "
-                << result->directories.size() << " directories in cloud."
-                << std::endl;
-    }
+    // 4. Start Cloud Sync Worker
+    cloudSync.start();
 
     std::cout << "[Main] Running. Monitoring: " << syncFolder << std::endl;
     std::cout << "[Main] Modify some files in the sync folder to see events."
               << std::endl;
 
-    std::unique_lock<std::mutex> lock(cv_m);
-    cv.wait(lock, [] { return !running.load(); });
-    // Keep main alive to continue to track the sync folder
-    while (true) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+    try {
+      std::unique_lock<std::mutex> lock(cv_m);
+      cv.wait(lock, [] { return !running.load(); });
+      // Keep main alive to continue to track the sync folder
+    } catch (...) {
+      std::cout << "[Main] Exception in main thread" << std::endl;
     }
-
+    std::cout << "[Main] Shutting down..." << std::endl;
+    cloudSync.stop();
     watcher.stop();
     dbManager.close();
     std::cout << "[Main] Finished." << std::endl;

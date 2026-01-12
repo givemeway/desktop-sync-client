@@ -1,6 +1,7 @@
 #include "DatabaseManager.hpp"
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <sqlite3.h>
 #include <sqlite_orm/sqlite_orm.h>
 using namespace sqlite_orm;
@@ -323,6 +324,39 @@ bool DatabaseManager::insertDirectory(const DirectoryMetadata &dir,
   }
 }
 
+bool DatabaseManager::insertFileWithDirectory(
+    FileMetadata &f, const std::vector<DirectoryMetadata> &dirs) {
+  try {
+    return m_impl->storage.transaction([this, &dirs, &f]() {
+      for (auto &dir : dirs) {
+        try {
+          m_impl->storage.get<DirectoryMetadata>(dir.device, dir.folder,
+                                                 dir.path);
+        } catch (const std::exception &e) {
+          m_impl->storage.replace<DirectoryMetadata>(dir);
+        }
+      }
+      auto p = getFolderDevice(std::filesystem::path(f.path));
+
+      try {
+        auto dirExists =
+            m_impl->storage.get<DirectoryMetadata>(p.device, p.folder, f.path);
+        DirectoryMetadata d(dirExists);
+        d.uuid = f.dirID;
+        m_impl->storage.replace<DirectoryMetadata>(d);
+      } catch (...) {
+      }
+      m_impl->storage.replace<FileMetadata>(f);
+      return true;
+    });
+
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error Creating File & its Directory ->" << e.what()
+              << std::endl;
+    return false;
+  }
+}
+
 bool DatabaseManager::updateDirectory(const DirectoryMetadata &dir) {
   try {
     m_impl->storage.update<DirectoryMetadata>(dir);
@@ -620,5 +654,7 @@ bool DatabaseManager::deleteDirectoryQueue(const std::string &uuid) {
     return false;
   }
 }
+
+std::recursive_mutex &DatabaseManager::getSyncMutex() { return m_syncMutex; }
 
 } // namespace sync_app

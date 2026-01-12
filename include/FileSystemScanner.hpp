@@ -15,10 +15,10 @@ public:
   std::string toRelativePath(const std::string &absPath);
   std::int64_t getUnixTimeStamp(const std::filesystem::file_time_type &ftime);
   std::string normalizePathSeparators(const std::string &path);
+  std::string calculateHash(const std::string &absPath);
 
 private:
   std::string m_syncPath;
-  std::string calculateHash(const std::string &absPath);
 };
 
 } // namespace sync_app

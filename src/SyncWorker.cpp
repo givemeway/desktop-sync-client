@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <string>
 namespace fs = std::filesystem;
 
@@ -15,6 +16,7 @@ SyncWorker::SyncWorker(DatabaseManager &dbManager, FileSystemScanner &scanner,
 SyncWorker::~SyncWorker() = default;
 
 void SyncWorker::handleAdded(const std::string &path) {
+  std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
   std::string type;
   if (std::filesystem::is_directory(path))
     type = "folder";
@@ -24,7 +26,8 @@ void SyncWorker::handleAdded(const std::string &path) {
     std::filesystem::path p(path);
     std::string relPath = m_scanner.toRelativePath(path);
     std::string filename = p.filename().generic_string();
-    auto file = m_dbManager.getFileByPath(relPath, filename);
+    std::optional<FileMetadata> file =
+        m_dbManager.getFileByPath(relPath, filename);
     if (!file.has_value()) {
       FileMetadata f;
       FileQueueEntry fq;
@@ -69,7 +72,6 @@ void SyncWorker::handleAdded(const std::string &path) {
         dq.old_path = d.path;
         dq.sync_status = "FILE_LINKED";
         m_dbManager.insertDirectory(d, dq);
-        // m_dbManager.insertDirectoryQueue(dq);
         f.dirID = d.uuid;
       }
       fq = FileMetadata(f);
@@ -78,10 +80,8 @@ void SyncWorker::handleAdded(const std::string &path) {
       fq.sync_status = "new";
       f.conflictId = "";
       m_dbManager.insertFile(f, fq);
-      //      m_dbManager.insertFileQueue(fq);
     } else {
-      std::cout << "[syncworker] File Exists in the DB skipping";
-      // do think as it could be a down sync from cloud to local
+      std::cout << "[syncworker] File Skipped: " << path << std::endl;
       return;
     }
   }
@@ -93,21 +93,21 @@ void SyncWorker::handleAdded(const std::string &path) {
     d.device = part.device;
     d.folder = part.folder;
     d.absPath = path;
+    auto existingDir =
+        m_dbManager.getDirectoryByPath(part.device, part.folder, d.path);
     d.inode = m_scanner.getInode(path);
     auto ftime = fs::last_write_time(path);
     d.created_at = std::to_string(m_scanner.getUnixTimeStamp(ftime));
-    auto existingDir =
-        m_dbManager.getDirectoryByPath(part.device, part.folder, path);
-    if (existingDir.has_value()) {
-      d.uuid = existingDir->uuid;
-    } else {
+    if (!existingDir.has_value()) {
       d.uuid = UuidUtils::generate();
+      dq = DirectoryMetadata(d);
+      dq.sync_status = "new";
+      dq.old_path = d.path;
+      m_dbManager.insertDirectory(d, dq);
+    } else {
+      std::cout << "[syncworker] Dir Skipped: " << path << std::endl;
+      return;
     }
-    dq = DirectoryMetadata(d);
-    dq.sync_status = "new";
-    dq.old_path = d.path;
-    //  m_dbManager.insertDirectoryQueue(dq);
-    m_dbManager.insertDirectory(d, dq);
   }
 };
 void SyncWorker::handleDeleted(const std::string &path) {
@@ -133,7 +133,6 @@ void SyncWorker::handleDeleted(const std::string &path) {
       fq.old_filename = fq.filename;
       fq.sync_status = "delete";
       m_dbManager.deleteFile(existingFile->path, existingFile->filename, fq);
-      //      m_dbManager.insertFileQueue(fq);
     }
   }
 };

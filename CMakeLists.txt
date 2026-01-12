@@ -31,7 +31,8 @@ add_executable(sync_client
     src/FilesystemWatcher.cpp
     src/FileSystemScanner.cpp
     src/SyncWorker.cpp
-)
+    src/CloudSyncWorker.cpp
+  )
 
 # Link Libraries
 if(WIN32)
