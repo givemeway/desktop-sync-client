@@ -46,6 +46,10 @@ private:
     std::string directory;
   };
   PathParts parsePath(const std::string &path);
+  std::vector<CloudFileMetadata>
+  getDirIDs(const std::vector<CloudFileMetadata> &cloudFiles,
+            const std::vector<CloudFolderMetadata> &cloudDirs);
+  std::vector<std::string> getPathComponents(const std::string &path);
 };
 
 } // namespace sync_app

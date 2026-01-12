@@ -48,6 +48,52 @@ ApiClient::ApiClient(const std::string &baseUrl, const std::string &userEmail)
 
 ApiClient::~ApiClient() = default;
 
+std::vector<std::string> ApiClient::getPathComponents(const std::string &path) {
+
+  std::vector<std::string> tokens;
+  std::stringstream ss(path);
+  std::string token;
+  while (std::getline(ss, token, '/')) {
+    tokens.push_back(token);
+  }
+  if (tokens.size() <= 2 && tokens[1].empty()) {
+    return std::vector<std::string>{"/"};
+  }
+
+  std::vector<std::string> pathTree;
+  for (int i = 1; i < tokens.size(); i++) {
+    std::string path = "";
+    for (int j = 1; j < i + 1; j++) {
+      path += "/" + tokens[j];
+    }
+    pathTree.push_back(path);
+  }
+  return pathTree;
+}
+
+std::vector<CloudFileMetadata>
+ApiClient::getDirIDs(const std::vector<CloudFileMetadata> &cloudFiles,
+                     const std::vector<CloudFolderMetadata> &cloudDirs) {
+  std::map<std::string, std::string> dirIDMap;
+  for (auto &d : cloudDirs) {
+    dirIDMap[d.path] = d.uuid;
+  }
+  std::vector<CloudFileMetadata> cf(cloudFiles);
+  for (auto &f : cf) {
+    auto filePaths = getPathComponents(f.path);
+    for (std::string path : filePaths) {
+      auto it = dirIDMap.find(path);
+      if (it != dirIDMap.end()) {
+        if (!f.dirIDs) {
+          f.dirIDs = std::map<std::string, std::string>();
+        }
+        (*f.dirIDs)[path] = it->second;
+      }
+    }
+  }
+  return cf;
+}
+
 std::optional<CloudMetadataResult> ApiClient::getMetadata() {
   std::string path =
       "/app/sync/getSyncItems?username=" + urlEncode(m_userEmail);
@@ -68,6 +114,7 @@ std::optional<CloudMetadataResult> ApiClient::getMetadata() {
           result.directories.push_back(item.get<CloudFolderMetadata>());
         }
       }
+      result.files = getDirIDs(result.files, result.directories);
       return result;
     } else {
       std::cout << "[API] Parsing Error -> Assertion Failed" << std::endl;

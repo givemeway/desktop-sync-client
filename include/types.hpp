@@ -107,6 +107,7 @@ struct CloudFileMetadata {
   std::string lastSyncedHashValue;
   int32_t versions;
   std::optional<std::string> conflictId;
+  std::optional<std::map<std::string, std::string>> dirIDs;
 };
 
 struct CloudFolderMetadata {

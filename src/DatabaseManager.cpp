@@ -329,22 +329,7 @@ bool DatabaseManager::insertFileWithDirectory(
   try {
     return m_impl->storage.transaction([this, &dirs, &f]() {
       for (auto &dir : dirs) {
-        try {
-          m_impl->storage.get<DirectoryMetadata>(dir.device, dir.folder,
-                                                 dir.path);
-        } catch (const std::exception &e) {
-          m_impl->storage.replace<DirectoryMetadata>(dir);
-        }
-      }
-      auto p = getFolderDevice(std::filesystem::path(f.path));
-
-      try {
-        auto dirExists =
-            m_impl->storage.get<DirectoryMetadata>(p.device, p.folder, f.path);
-        DirectoryMetadata d(dirExists);
-        d.uuid = f.dirID;
-        m_impl->storage.replace<DirectoryMetadata>(d);
-      } catch (...) {
+        m_impl->storage.replace<DirectoryMetadata>(dir);
       }
       m_impl->storage.replace<FileMetadata>(f);
       return true;

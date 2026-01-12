@@ -3,6 +3,7 @@
 #include "DatabaseManager.hpp"
 #include "ReconciliationService.hpp"
 #include "UuidUtils.hpp"
+#include <iostream>
 namespace sync_app {
 
 CloudSyncWorker::CloudSyncWorker(DatabaseManager &dbManager,
@@ -99,7 +100,8 @@ void CloudSyncWorker::processFilesToDownload(
         if (!dirExists.has_value()) {
           std::vector<std::string> paths = getPathComponents(file.path);
           for (auto path : paths) {
-            auto d = getDirectoryMetadata(path, UuidUtils::generate());
+            auto uuid = (*file.dirIDs).find(path)->second;
+            auto d = getDirectoryMetadata(path, uuid);
             dirs.push_back(d);
           }
           int len = dirs.size();
