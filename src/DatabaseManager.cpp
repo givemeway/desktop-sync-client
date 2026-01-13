@@ -366,13 +366,18 @@ bool DatabaseManager::updateDirectory(const DirectoryMetadata &dir) {
 
 bool DatabaseManager::deleteDirectory(const std::string &path) {
   try {
-    m_impl->storage.remove_all<DirectoryMetadata>(
-        where(c(&DirectoryMetadata::path) == path ||
-              like(&DirectoryMetadata::path, path + "/%")));
-    return true;
+    return m_impl->storage.transaction([&]() {
+      m_impl->storage.remove_all<FileMetadata>(
+          where(c(&FileMetadata::path) == path ||
+                like(&FileMetadata::path, path + "/%")));
+      m_impl->storage.remove_all<DirectoryMetadata>(
+          where(c(&DirectoryMetadata::path) == path ||
+                like(&DirectoryMetadata::path, path + "/%")));
+      return true;
+    });
   } catch (const std::exception &e) {
-    std::cerr << "[DB] Error deleting ->" << path << " from Directory Table =>"
-              << e.what() << std::endl;
+    std::cerr << "[DB] Error deleting path ->" << path << " | " << e.what()
+              << std::endl;
     return false;
   }
 }

@@ -39,6 +39,7 @@ void CloudSyncWorker::pollCloudToSyncToLocal() {
     processFilesToDownload(filesToDownload);
     processFilesToDelete(filesToDeleteLocal);
     processFoldersToCreate(foldersToCreateLocal);
+    processFoldersToDelete(foldersToDeleteLocal);
   } else {
   }
 }
@@ -201,6 +202,19 @@ void CloudSyncWorker::processFoldersToCreate(
 void CloudSyncWorker::processFoldersToDelete(
     const std::vector<LocalFolderDeleteMetadata> &foldersToDeleteLocal) {
   for (auto &folder : foldersToDeleteLocal) {
+    {
+      std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+      try {
+        if (std::filesystem::exists(folder.absPath)) {
+          std::filesystem::remove_all(folder.absPath);
+        }
+      } catch (const std::exception &e) {
+        std::cerr << "[cloudsyncworker] exception: " << e.what()
+                  << " | unable to delete folder: " << folder.path << std::endl;
+        continue;
+      }
+      m_dbManager.deleteDirectory(folder.path);
+    }
   }
 }
 
