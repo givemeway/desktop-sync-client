@@ -116,6 +116,7 @@ struct CloudFolderMetadata {
   std::string folder;
   std::string path;
   std::string created_at;
+  std::optional<std::map<std::string, std::string>> dirIDs;
 };
 
 struct CloudMetadataResult {
@@ -131,6 +132,7 @@ struct LocalFolderCreateMetadata {
   std::string uuid;
   std::string device;
   std::string created_at;
+  std::optional<std::map<std::string, std::string>> dirIDs;
 };
 
 struct LocalFolderDeleteMetadata {

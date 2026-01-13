@@ -62,6 +62,7 @@ private:
       const std::map<std::string, std::vector<FileQueueEntry>>
           &localQueueByUuid,
       const std::map<std::string, FileQueueEntry> &localQueueByPath);
+  std::vector<std::string> getPathComponents(const std::string &path);
 };
 
 struct PathDiff {

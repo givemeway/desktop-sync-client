@@ -30,7 +30,8 @@ private:
   bool createLocalDirectory(const std::string &path);
   DirectoryMetadata getDirectoryMetadata(const std::string &path,
                                          const std::string &uuid);
-
+  FileMetadata getFileMetadata(const CloudFileMetadata &cloudFile,
+                               const std::string &absPath);
   std::vector<std::string> getPathComponents(const std::string &path);
   void
   processFilesToDownload(const std::vector<CloudFileMetadata> &filesToDownload);

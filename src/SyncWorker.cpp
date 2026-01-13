@@ -111,6 +111,9 @@ void SyncWorker::handleAdded(const std::string &path) {
   }
 };
 void SyncWorker::handleDeleted(const std::string &path) {
+  std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+  // Determine if the deleted event is file or directory
+  // 1. Check if the deleted event is folder
   fs::path fp(path);
   fs::path base(m_syncPath);
   std::string relPath = "/" + fs::relative(fp, base).generic_string();
@@ -123,18 +126,22 @@ void SyncWorker::handleDeleted(const std::string &path) {
     dq.sync_status = "delete";
     dq.old_path = dq.path;
     m_dbManager.deleteFolderWithTransaction(relPath, dq);
-  } else {
-    std::string filePath = fs::path(relPath).parent_path().generic_string();
-    std::string filename = fs::path(relPath).filename().generic_string();
-    auto existingFile = m_dbManager.getFileByPath(filePath, filename);
-    if (existingFile.has_value()) {
-      FileQueueEntry fq(*existingFile);
-      fq.old_path = fq.path;
-      fq.old_filename = fq.filename;
-      fq.sync_status = "delete";
-      m_dbManager.deleteFile(existingFile->path, existingFile->filename, fq);
-    }
+    return;
   }
+  // 2. check if the deleted event is file
+  std::string filePath = fs::path(relPath).parent_path().generic_string();
+  std::string filename = fs::path(relPath).filename().generic_string();
+  auto existingFile = m_dbManager.getFileByPath(filePath, filename);
+  if (existingFile.has_value()) {
+    FileQueueEntry fq(*existingFile);
+    fq.old_path = fq.path;
+    fq.old_filename = fq.filename;
+    fq.sync_status = "delete";
+    m_dbManager.deleteFile(existingFile->path, existingFile->filename, fq);
+    return;
+  }
+  // Delete event triggered by the cloudsyncworker deleting local files;
+  std::cout << "[syncworker] skipping the delete event" << std::endl;
 };
 
 void SyncWorker::handleRenamed(const std::string &path,

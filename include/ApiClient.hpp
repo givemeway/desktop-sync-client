@@ -4,8 +4,8 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
-
 namespace sync_app {
 
 /**
@@ -46,7 +46,7 @@ private:
     std::string directory;
   };
   PathParts parsePath(const std::string &path);
-  std::vector<CloudFileMetadata>
+  std::tuple<std::vector<CloudFileMetadata>, std::vector<CloudFolderMetadata>>
   getDirIDs(const std::vector<CloudFileMetadata> &cloudFiles,
             const std::vector<CloudFolderMetadata> &cloudDirs);
   std::vector<std::string> getPathComponents(const std::string &path);

@@ -5,6 +5,7 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <tuple>
 
 using json = nlohmann::json;
 
@@ -71,7 +72,7 @@ std::vector<std::string> ApiClient::getPathComponents(const std::string &path) {
   return pathTree;
 }
 
-std::vector<CloudFileMetadata>
+std::tuple<std::vector<CloudFileMetadata>, std::vector<CloudFolderMetadata>>
 ApiClient::getDirIDs(const std::vector<CloudFileMetadata> &cloudFiles,
                      const std::vector<CloudFolderMetadata> &cloudDirs) {
   std::map<std::string, std::string> dirIDMap;
@@ -79,6 +80,7 @@ ApiClient::getDirIDs(const std::vector<CloudFileMetadata> &cloudFiles,
     dirIDMap[d.path] = d.uuid;
   }
   std::vector<CloudFileMetadata> cf(cloudFiles);
+  std::vector<CloudFolderMetadata> cd(cloudDirs);
   for (auto &f : cf) {
     auto filePaths = getPathComponents(f.path);
     for (std::string path : filePaths) {
@@ -91,7 +93,19 @@ ApiClient::getDirIDs(const std::vector<CloudFileMetadata> &cloudFiles,
       }
     }
   }
-  return cf;
+  for (auto &d : cd) {
+    auto folderPaths = getPathComponents(d.path);
+    for (std::string path : folderPaths) {
+      auto it = dirIDMap.find(path);
+      if (it != dirIDMap.end()) {
+        if (!d.dirIDs) {
+          d.dirIDs = std::map<std::string, std::string>();
+        }
+        (*d.dirIDs)[path] = it->second;
+      }
+    }
+  }
+  return {cf, cd};
 }
 
 std::optional<CloudMetadataResult> ApiClient::getMetadata() {
@@ -114,7 +128,10 @@ std::optional<CloudMetadataResult> ApiClient::getMetadata() {
           result.directories.push_back(item.get<CloudFolderMetadata>());
         }
       }
-      result.files = getDirIDs(result.files, result.directories);
+      auto [cloudFiles, cloudDirs] =
+          getDirIDs(result.files, result.directories);
+      result.files = cloudFiles;
+      result.directories = cloudDirs;
       return result;
     } else {
       std::cout << "[API] Parsing Error -> Assertion Failed" << std::endl;

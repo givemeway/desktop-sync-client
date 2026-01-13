@@ -2,7 +2,6 @@
 #include "ApiClient.hpp"
 #include "DatabaseManager.hpp"
 #include "ReconciliationService.hpp"
-#include "UuidUtils.hpp"
 #include <iostream>
 namespace sync_app {
 
@@ -38,6 +37,8 @@ void CloudSyncWorker::pollCloudToSyncToLocal() {
     auto filesToUpdate = reconciledItems.filesToUpdate;
     auto filesInConflict = reconciledItems.filesInConflict;
     processFilesToDownload(filesToDownload);
+    processFilesToDelete(filesToDeleteLocal);
+    processFoldersToCreate(foldersToCreateLocal);
   } else {
   }
 }
@@ -65,6 +66,53 @@ CloudSyncWorker::getPathComponents(const std::string &path) {
   return pathTree;
 }
 
+FileMetadata CloudSyncWorker::getFileMetadata(const CloudFileMetadata &file,
+                                              const std::string &absPath) {
+  FileMetadata f;
+  f.filename = file.filename;
+  f.path = file.path;
+  f.absPath = absPath;
+  f.dirID = file.dirID;
+  f.inode = m_scanner.getInode(absPath);
+  f.hashvalue = file.hashvalue;
+  f.last_modified = file.last_modified;
+  f.lastSyncedHashValue = file.lastSyncedHashValue;
+  f.origin = file.origin;
+  f.uuid = file.uuid;
+  f.size = file.size;
+  f.versions = file.versions;
+  return f;
+}
+
+DirectoryMetadata
+CloudSyncWorker::getDirectoryMetadata(const std::string &path,
+                                      const std::string &uuid) {
+  DirectoryMetadata d;
+  std::string dirAbsPath;
+  dirAbsPath = path == "/" ? m_syncPath : m_syncPath + path;
+  pathParts p = m_dbManager.getFolderDevice(std::filesystem::path(path));
+  d.device = p.device;
+  d.absPath = dirAbsPath;
+  d.folder = p.folder;
+  d.path = path;
+  try {
+    d.created_at = std::to_string(m_scanner.getUnixTimeStamp(
+        std::filesystem::last_write_time(dirAbsPath)));
+
+  } catch (const std::exception &e) {
+    std::cerr << "[cloudsyncwoker] error fetching dir timestamp: " << e.what()
+              << std::endl;
+    auto now = std::chrono::system_clock::now();
+    auto timestamp =
+        std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch())
+            .count();
+    d.created_at = std::to_string(timestamp);
+  }
+  d.inode = m_scanner.getInode(dirAbsPath);
+  d.uuid = uuid;
+  return d;
+}
+
 void CloudSyncWorker::processFilesToDownload(
     const std::vector<CloudFileMetadata> &filesToDownload) {
   for (auto &file : filesToDownload) {
@@ -82,19 +130,7 @@ void CloudSyncWorker::processFilesToDownload(
 
       if (downloadStatus) {
         std::vector<DirectoryMetadata> dirs;
-        FileMetadata f;
-        f.filename = file.filename;
-        f.path = file.path;
-        f.absPath = fileAbsPath;
-        f.dirID = file.dirID;
-        f.inode = m_scanner.getInode(fileAbsPath);
-        f.hashvalue = file.hashvalue;
-        f.last_modified = file.last_modified;
-        f.lastSyncedHashValue = file.lastSyncedHashValue;
-        f.origin = file.origin;
-        f.uuid = file.uuid;
-        f.size = file.size;
-        f.versions = file.versions;
+        FileMetadata f(getFileMetadata(file, fileAbsPath));
         auto dirExists =
             m_dbManager.getDirectoryByPath(fp.device, fp.folder, file.path);
         if (!dirExists.has_value()) {
@@ -104,8 +140,6 @@ void CloudSyncWorker::processFilesToDownload(
             auto d = getDirectoryMetadata(path, uuid);
             dirs.push_back(d);
           }
-          int len = dirs.size();
-          dirs[len - 1].uuid = file.dirID;
         } else {
           auto d = getDirectoryMetadata(f.path, file.dirID);
           dirs.push_back(d);
@@ -117,34 +151,50 @@ void CloudSyncWorker::processFilesToDownload(
     }
   }
 }
-
-DirectoryMetadata
-CloudSyncWorker::getDirectoryMetadata(const std::string &path,
-                                      const std::string &uuid) {
-  DirectoryMetadata d;
-  std::string dirAbsPath;
-  dirAbsPath = path == "/" ? m_syncPath : m_syncPath + path;
-  pathParts p = m_dbManager.getFolderDevice(std::filesystem::path(path));
-  d.device = p.device;
-  d.absPath = dirAbsPath;
-  d.folder = p.folder;
-  d.path = path;
-  d.created_at = std::to_string(
-      m_scanner.getUnixTimeStamp(std::filesystem::last_write_time(dirAbsPath)));
-  d.inode = m_scanner.getInode(dirAbsPath);
-  d.uuid = uuid;
-  return d;
-}
-
 void CloudSyncWorker::processFilesToDelete(
     const std::vector<FileMetadata> &filesToDeleteLocal) {
   for (auto &file : filesToDeleteLocal) {
+    try {
+      {
+        std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+        std::filesystem::remove(file.absPath);
+        m_dbManager.deleteFileByPath(file.path, file.filename);
+      }
+    } catch (const std::exception &e) {
+      std::cerr << "[cloudsyncworker] Exception:" << e.what()
+                << " in deleting file->" << file.absPath << std::endl;
+    }
   }
 }
 
 void CloudSyncWorker::processFoldersToCreate(
     const std::vector<LocalFolderCreateMetadata> &foldersToCreateLocal) {
   for (auto &folder : foldersToCreateLocal) {
+    {
+      std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+      try {
+        if (!std::filesystem::exists(folder.absPath)) {
+          std::cout << "[cloudsyncworker] creating path ..." << folder.absPath
+                    << std::endl;
+          std::filesystem::create_directories(folder.absPath);
+        }
+      } catch (const std::exception &e) {
+        std::cerr << "[cloudsyncworker] unable to create path" << folder.absPath
+                  << " | " << e.what() << std::endl;
+        continue;
+      }
+      auto folderPaths = getPathComponents(folder.path);
+      std::vector<DirectoryMetadata> dirs;
+      for (auto &path : folderPaths) {
+        auto uuid = (*folder.dirIDs).find(path)->second;
+        auto d = getDirectoryMetadata(path, uuid);
+        dirs.push_back(d);
+      }
+      auto result = m_dbManager.createDirectoryPaths(dirs);
+      if (!result) {
+        std::filesystem::remove(folder.absPath);
+      }
+    }
   }
 }
 

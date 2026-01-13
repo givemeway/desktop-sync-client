@@ -240,6 +240,17 @@ bool DatabaseManager::deleteFile(const std::string &path,
   }
 }
 
+bool DatabaseManager::deleteFileByPath(const std::string &path,
+                                       const std::string &filename) {
+  try {
+    m_impl->storage.remove<FileMetadata>(path, filename);
+    return true;
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Exception : " << e.what() << " " << path << std::endl;
+    return false;
+  }
+}
+
 bool DatabaseManager::upsertFile(const FileMetadata &file) {
   try {
     m_impl->storage.replace<FileMetadata>(file);
@@ -603,6 +614,22 @@ DatabaseManager::getDirectoryQueue() {
     std::cerr << "[DB] Error fetching Directory Queue " << e.what()
               << std::endl;
     return std::nullopt;
+  }
+}
+
+bool DatabaseManager::createDirectoryPaths(
+    const std::vector<DirectoryMetadata> &dirs) {
+  try {
+    m_impl->storage.transaction([&]() {
+      for (auto dir : dirs) {
+        m_impl->storage.replace<DirectoryMetadata>(dir);
+      }
+      return true;
+    });
+    return true;
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error directory paths : " << e.what() << std::endl;
+    return false;
   }
 }
 

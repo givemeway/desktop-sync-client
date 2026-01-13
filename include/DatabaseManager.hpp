@@ -38,12 +38,13 @@ public:
                   const FileQueueEntry &fq);
   bool deleteFilesByPath(const std::string &path);
   bool upsertFile(const FileMetadata &file);
-
+  bool deleteFileByPath(const std::string &path, const std::string &filename);
   // Directory operations
   std::optional<std::vector<DirectoryMetadata>> getAllDirectories();
   std::optional<DirectoryMetadata> getDirectoryByPath(const std::string &device,
                                                       const std::string &folder,
                                                       const std::string &path);
+  bool createDirectoryPaths(const std::vector<DirectoryMetadata> &dirs);
   bool
   insertFileWithDirectory(FileMetadata &f,
                           const std::vector<DirectoryMetadata> &pathComponents);

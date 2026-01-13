@@ -31,6 +31,29 @@ std::string ReconciliationService::getUniqueKey(const std::string &dir,
   }
   return normalizedDir + filename;
 }
+std::vector<std::string>
+ReconciliationService::getPathComponents(const std::string &path) {
+
+  std::vector<std::string> tokens;
+  std::stringstream ss(path);
+  std::string token;
+  while (std::getline(ss, token, '/')) {
+    tokens.push_back(token);
+  }
+  if (tokens.size() <= 2 && tokens[1].empty()) {
+    return std::vector<std::string>{"/"};
+  }
+
+  std::vector<std::string> pathTree;
+  for (int i = 1; i < tokens.size(); i++) {
+    std::string path = "";
+    for (int j = 1; j < i + 1; j++) {
+      path += "/" + tokens[j];
+    }
+    pathTree.push_back(path);
+  }
+  return pathTree;
+}
 
 std::optional<PathDiff>
 ReconciliationService::findRenameDepthFromPath(const std::string &oldPath,
@@ -231,12 +254,22 @@ ReconciliationResult ReconciliationService::reconcile(
       if (!alreadyInQ) {
         LocalFolderCreateMetadata createMeta;
         createMeta.absPath =
-            std::filesystem::path(m_syncPath).append(cloudDir.path).string();
+            cloudDir.path == "/" ? m_syncPath : m_syncPath + cloudDir.path;
         createMeta.path = cloudDir.path;
         createMeta.folder = cloudDir.folder;
         createMeta.uuid = cloudDir.uuid;
         createMeta.device = cloudDir.device;
         createMeta.created_at = cloudDir.created_at;
+        auto dirPaths = getPathComponents(cloudDir.path);
+        for (auto &path : dirPaths) {
+          auto it = cloudDirMap.find(path);
+          if (it != cloudDirMap.end()) {
+            if (!createMeta.dirIDs) {
+              createMeta.dirIDs = std::map<std::string, std::string>();
+            }
+            (*createMeta.dirIDs)[path] = it->second.uuid;
+          }
+        }
         result.foldersToCreateLocal.push_back(createMeta);
       }
     }
