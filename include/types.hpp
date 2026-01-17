@@ -8,6 +8,8 @@
 
 namespace sync_app {
 
+enum class SyncStatus { NEW, RENAME, MODIFIED, DELETE, FILE_LINKED, UNKNOWN };
+
 struct ScannedFile {
   std::string path; // Relative path from sync root (e.g. "/foo/bar.txt")
   std::string filename;
@@ -45,6 +47,7 @@ struct FileMetadata {
   std::string origin;
   std::string lastSyncedHashValue;
   std::optional<std::string> conflictId;
+  std::string lastSynced;
 };
 
 struct DirectoryMetadata {
@@ -55,6 +58,7 @@ struct DirectoryMetadata {
   std::string created_at;
   std::string absPath;
   std::string inode;
+  std::string lastSynced;
 };
 
 struct FileQueueEntry : public FileMetadata {
@@ -184,4 +188,42 @@ inline void from_json(const nlohmann::json &j, CloudFolderMetadata &f) {
   f.created_at = j.value("created_at", "");
 }
 
+inline void to_json(nlohmann::json &j, const DirectoryMetadata &d) {
+  j = nlohmann::json{{"uuid", d.uuid},
+                     {"device", d.device},
+                     {"folder", d.folder},
+                     {"path", d.path},
+                     {"created_at", d.created_at}};
+}
+
+inline std::string syncStatusToString(SyncStatus status) {
+  switch (status) {
+  case SyncStatus::NEW:
+    return "new";
+  case SyncStatus::DELETE:
+    return "delete";
+  case SyncStatus::MODIFIED:
+    return "modified";
+  case SyncStatus::FILE_LINKED:
+    return "FILE_LINKED";
+  case SyncStatus::RENAME:
+    return "rename";
+  default:
+    return "unknown";
+  }
+}
+
+inline SyncStatus stringToSyncStatus(const std::string &syncStatus) {
+  if (syncStatus == "new")
+    return SyncStatus::NEW;
+  if (syncStatus == "delete")
+    return SyncStatus::DELETE;
+  if (syncStatus == "modified")
+    return SyncStatus::MODIFIED;
+  if (syncStatus == "rename")
+    return SyncStatus::RENAME;
+  if (syncStatus == "FILE_LINKED")
+    return SyncStatus::FILE_LINKED;
+  return SyncStatus::UNKNOWN;
+}
 } // namespace sync_app

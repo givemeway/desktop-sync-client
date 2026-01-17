@@ -1,16 +1,21 @@
-#include "ApiClient.hpp"
-#include "DatabaseManager.hpp"
-#include "FileSystemScanner.hpp"
-#include "ReconciliationService.hpp"
+#include "types.hpp"
 #include <atomic>
+#include <string>
 #include <thread>
 namespace sync_app {
+
+class DatabaseManager;
+class ApiClient;
+class FileSystemScanner;
+class SyncWorker;
+class ReconciliationService;
 
 class CloudSyncWorker {
 public:
   CloudSyncWorker(DatabaseManager &dbManager, ApiClient &apiClient,
                   ReconciliationService &reconcile, FileSystemScanner &scanner,
-                  const std::string &syncPath, const std::string &userEmail);
+                  SyncWorker &syncWorker, const std::string &syncPath,
+                  const std::string &userEmail);
   ~CloudSyncWorker();
   void start();
   void stop();
@@ -20,13 +25,15 @@ private:
   ApiClient &m_apiClient;
   ReconciliationService &m_reconcile;
   FileSystemScanner &m_scanner;
+  SyncWorker &m_syncWorker;
   std::string m_syncPath;
   std::string m_userEmail;
   std::thread m_workerThread;
   std::atomic<bool> m_stopThread;
   void pollCloudToSyncToLocal();
   void run();
-  void processQueue();
+  void processQueueToSyncUp();
+  std::string getCurrentTime();
   bool createLocalDirectory(const std::string &path);
   DirectoryMetadata getDirectoryMetadata(const std::string &path,
                                          const std::string &uuid);

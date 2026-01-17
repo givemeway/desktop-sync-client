@@ -23,9 +23,10 @@ public:
   // File operations
   bool downloadFile(const CloudFileMetadata &file,
                     const std::string &localAbsPath);
-  std::optional<std::string>
-  uploadFile(const FileQueueEntry &file,
-             const std::vector<std::string> &pathIds);
+  bool uploadFile(const FileQueueEntry &file,
+                  const std::vector<DirectoryMetadata> &pathIds =
+                      std::vector<DirectoryMetadata>(),
+                  bool isModified = false);
   bool deleteFile(const FileQueueEntry &file);
   bool renameFile(const FileQueueEntry &file);
 

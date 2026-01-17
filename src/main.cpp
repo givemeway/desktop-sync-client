@@ -62,7 +62,7 @@ int main() {
     sync_app::SyncWorker syncworker(dbManager, scanner, syncFolder);
     sync_app::CloudSyncWorker cloudSync(dbManager, apiClient,
                                         reconciliationService, scanner,
-                                        syncFolder, userEmail);
+                                        syncworker, syncFolder, userEmail);
     std::cout << "[Main] Database initialized." << std::endl;
     std::cout << "[Main] API Client initialized." << std::endl;
 
@@ -75,38 +75,15 @@ int main() {
         << "[Main] Initial filesystem scan and local reconciliation complete."
         << std::endl;
 
-    // 3. Initialize Watcher
+    // 3. Initialize SyncWorker Background Thread
+    syncworker.start();
+
+    // 4. Initialize Watcher
     sync_app::FilesystemWatcher watcher(
-        syncFolder, [&reconciliationService, &syncworker](
-                        const std::string &path, const std::string &oldPath,
-                        sync_app::WatchEvent event) {
-          std::string eventStr;
-          switch (event) {
-          case sync_app::WatchEvent::Added:
-            eventStr = "Added";
-            std::cout << "[Watcher] Event: " << eventStr << " on " << path
-                      << std::endl;
-            syncworker.handleAdded(path);
-            break;
-          case sync_app::WatchEvent::Modified:
-            eventStr = "Modified";
-            std::cout << "[Watcher] Event: " << eventStr << " on " << path
-                      << std::endl;
-            syncworker.handleModified(path);
-            break;
-          case sync_app::WatchEvent::Deleted:
-            eventStr = "Deleted";
-            std::cout << "[Watcher] Event: " << eventStr << " on " << path
-                      << std::endl;
-            syncworker.handleDeleted(path);
-            break;
-          case sync_app::WatchEvent::Moved:
-            eventStr = "Moved";
-            std::cout << "[Watcher] Event: " << eventStr << " on " << path
-                      << std::endl;
-            syncworker.handleRenamed(path, oldPath);
-            break;
-          }
+        syncFolder,
+        [&syncworker](const std::string &path, const std::string &oldPath,
+                      sync_app::WatchEvent event) {
+          syncworker.enqueueEvent(event, path, oldPath);
         });
     watcher.start();
 
@@ -125,6 +102,7 @@ int main() {
       std::cout << "[Main] Exception in main thread" << std::endl;
     }
     std::cout << "[Main] Shutting down..." << std::endl;
+    syncworker.stop();
     cloudSync.stop();
     watcher.stop();
     dbManager.close();

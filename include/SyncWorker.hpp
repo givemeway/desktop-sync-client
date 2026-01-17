@@ -1,6 +1,7 @@
 #pragma once
 #include "DatabaseManager.hpp"
 #include "FileSystemScanner.hpp"
+#include "FilesystemWatcher.hpp"
 #include <string>
 #ifndef SYNC_WORKER_HPP
 #define SYNC_WORKER_HPP
@@ -16,11 +17,16 @@ public:
   void handleDeleted(const std::string &path);
   void handleRenamed(const std::string &path, const std::string &oldPath);
   void handleModified(const std::string &path);
+  void start();
+  void stop();
+  void enqueueEvent(WatchEvent event, const std::string &path,
+                    const std::string &oldPath);
+  void addIgnoreEvent(const std::string &path, WatchEvent event);
+  void workerLoop();
 
 private:
-  DatabaseManager &m_dbManager;
-  FileSystemScanner &m_scanner;
-  std::string m_syncPath;
+  struct Impl;
+  std::unique_ptr<Impl> m_impl;
 };
 
 } // namespace sync_app

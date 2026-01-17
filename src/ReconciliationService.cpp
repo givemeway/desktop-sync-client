@@ -33,7 +33,8 @@ std::string ReconciliationService::getUniqueKey(const std::string &dir,
 }
 std::vector<std::string>
 ReconciliationService::getPathComponents(const std::string &path) {
-
+  if (path == "/")
+    return std::vector<std::string>{"/"};
   std::vector<std::string> tokens;
   std::stringstream ss(path);
   std::string token;
@@ -145,13 +146,15 @@ ReconciliationResult ReconciliationService::reconcile(
     bool isLocalModified = false;
     auto itLocalQ = localQueueByPath.find(pathKey);
     if (itLocalQ != localQueueByPath.end()) {
-      isLocalModified = (itLocalQ->second.sync_status == "modified");
+      isLocalModified = (itLocalQ->second.sync_status ==
+                         syncStatusToString(SyncStatus::MODIFIED));
     }
 
     bool isLocalRenamed = false;
     auto itLocalOR = localQueueByOrigin.find(cloudFile.origin);
     if (itLocalOR != localQueueByOrigin.end()) {
-      isLocalRenamed = (itLocalOR->second.sync_status == "rename");
+      isLocalRenamed = (itLocalOR->second.sync_status ==
+                        syncStatusToString(SyncStatus::RENAME));
     }
 
     bool isCloudModified =
@@ -209,7 +212,9 @@ ReconciliationResult ReconciliationService::reconcile(
       auto itLQ = localQueueByOrigin.find(dbFile.origin);
       if (itLQ != localQueueByOrigin.end()) {
         const auto &status = itLQ->second.sync_status;
-        if (status == "modified" || status == "rename" || status == "new") {
+        if (status == syncStatusToString(SyncStatus::MODIFIED) ||
+            status == syncStatusToString(SyncStatus::RENAME) ||
+            status == syncStatusToString(SyncStatus::NEW)) {
           continue; // Skip if local work pending
         }
       }
@@ -230,15 +235,19 @@ ReconciliationResult ReconciliationService::reconcile(
 
   // 7. Directory Reconciliation (Paths are authoritative)
   std::map<std::string, CloudFolderMetadata> cloudDirMap;
+  std::map<std::string, CloudFolderMetadata> cloudDirMapByUuid;
   for (const auto &d : cloudDirs) {
     if (d.path != "/")
       cloudDirMap[d.path] = d;
+    cloudDirMapByUuid[d.uuid] = d;
   }
 
   std::map<std::string, DirectoryMetadata> dbDirMap;
+  std::map<std::string, DirectoryMetadata> dbDirMapByUuid;
   for (const auto &d : dbDirs) {
     if (d.path != "/")
       dbDirMap[d.path] = d;
+    dbDirMapByUuid[d.uuid] = d;
   }
 
   for (const auto &[path, cloudDir] : cloudDirMap) {
@@ -310,9 +319,9 @@ std::vector<RenameInfo> ReconciliationService::detectDirRenames(
     std::vector<DirectoryQueueEntry> news;
 
     for (const auto &e : group) {
-      if (e.sync_status == "delete")
+      if (e.sync_status == syncStatusToString(SyncStatus::DELETE))
         deletes.push_back(e);
-      else if (e.sync_status == "new")
+      else if (e.sync_status == syncStatusToString(SyncStatus::NEW))
         news.push_back(e);
     }
 
@@ -386,7 +395,7 @@ void ReconciliationService::reconcileDirRenamedCandidates(
     dq.folder = dir.newSegment ? *dir.newSegment : dir.folder;
     dq.path = dir.newPath;
     dq.old_path = dir.oldPath;
-    dq.sync_status = "rename";
+    dq.sync_status = syncStatusToString(SyncStatus::RENAME);
     dq.absPath = std::filesystem::path(m_syncPath).append(dir.newPath).string();
 
     m_dbManager.upsertDirectoryQueue(dq);
@@ -473,7 +482,7 @@ void ReconciliationService::reconcileLocalState(
       f.lastSyncedHashValue = sFile.hash;
 
       fq = FileMetadata(f);
-      fq.sync_status = "new";
+      fq.sync_status = syncStatusToString(SyncStatus::NEW);
       fq.old_filename = sFile.filename;
       fq.old_path = sFile.path;
 
@@ -512,7 +521,7 @@ void ReconciliationService::reconcileLocalState(
         }
         // Create DirectoryQueueEntry from DirectoryMetadata
         dq = DirectoryQueueEntry(d);
-        dq.sync_status = "FILE_LINKED";
+        dq.sync_status = syncStatusToString(SyncStatus::FILE_LINKED);
         dq.old_path = d.path;
         //        m_dbManager.insertDirectoryQueue(dq);
         auto result = m_dbManager.insertDirectory(d, dq);
@@ -548,7 +557,7 @@ void ReconciliationService::reconcileLocalState(
         f.origin = dbFile.origin;
         f.versions = dbFile.versions + 1;
         fq = FileMetadata(f);
-        fq.sync_status = "modified";
+        fq.sync_status = syncStatusToString(SyncStatus::MODIFIED);
         m_dbManager.insertFile(f, fq);
         //        m_dbManager.upsertFile(f);
         //      m_dbManager.upsertFileQueue(fq);
@@ -562,7 +571,7 @@ void ReconciliationService::reconcileLocalState(
 
       // Create FileQueueEntry from FileMetadata
       FileQueueEntry q(dbFile);
-      q.sync_status = "delete";
+      q.sync_status = syncStatusToString(SyncStatus::DELETE);
       m_dbManager.deleteFile(dbFile.path, dbFile.filename, q);
       //      m_dbManager.upsertFileQueue(q);
     }
@@ -592,7 +601,7 @@ void ReconciliationService::reconcileLocalState(
       }
       q.device = part.device;
       qd = DirectoryMetadata(q);
-      qd.sync_status = "new";
+      qd.sync_status = syncStatusToString(SyncStatus::NEW);
       m_dbManager.insertDirectory(q, qd);
       //      m_dbManager.upsertDirectory(q);
       //    m_dbManager.upsertDirectoryQueue(qd);
@@ -605,7 +614,7 @@ void ReconciliationService::reconcileLocalState(
       std::cout << "[Reconcile] Offline DIR DELETE detected: " << path
                 << std::endl;
       DirectoryQueueEntry q(dbDir);
-      q.sync_status = "delete";
+      q.sync_status = syncStatusToString(SyncStatus::DELETE);
       m_dbManager.deleteFolderWithTransaction(dbDir.path, q);
       // m_dbManager.deleteDirectory(dbDir.path);
       // m_dbManager.upsertDirectoryQueue(q);
@@ -626,15 +635,15 @@ void ReconciliationService::reconcileLocalState(
     FileQueueEntry deleted{};
     FileQueueEntry added{};
     for (const auto &file : files) {
-      if (file.sync_status == "new")
+      if (file.sync_status == syncStatusToString(SyncStatus::NEW))
         added = file;
-      if (file.sync_status == "delete")
+      if (file.sync_status == syncStatusToString(SyncStatus::DELETE))
         deleted = file;
     }
     if (!deleted.sync_status.empty() && !added.sync_status.empty() &&
         deleted.hashvalue == added.hashvalue) {
       FileQueueEntry q(added);
-      added.sync_status = "rename";
+      added.sync_status = syncStatusToString(SyncStatus::RENAME);
       added.old_filename = deleted.filename;
       m_dbManager.deleteFileQueue(deleted.path, deleted.filename);
       m_dbManager.updateFileQueue(added);

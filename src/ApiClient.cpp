@@ -82,6 +82,12 @@ ApiClient::getDirIDs(const std::vector<CloudFileMetadata> &cloudFiles,
   std::vector<CloudFileMetadata> cf(cloudFiles);
   std::vector<CloudFolderMetadata> cd(cloudDirs);
   for (auto &f : cf) {
+    if (f.path == "/") {
+      if (!f.dirIDs)
+        f.dirIDs = std::map<std::string, std::string>();
+      (*f.dirIDs)["/"] = f.dirID;
+      continue;
+    }
     auto filePaths = getPathComponents(f.path);
     for (std::string path : filePaths) {
       auto it = dirIDMap.find(path);
@@ -94,6 +100,12 @@ ApiClient::getDirIDs(const std::vector<CloudFileMetadata> &cloudFiles,
     }
   }
   for (auto &d : cd) {
+    if (d.path == "/") {
+      if (!d.dirIDs)
+        d.dirIDs = std::map<std::string, std::string>();
+      (*d.dirIDs)["/"] = d.uuid;
+      continue;
+    }
     auto folderPaths = getPathComponents(d.path);
     for (std::string path : folderPaths) {
       auto it = dirIDMap.find(path);
@@ -157,7 +169,7 @@ bool ApiClient::downloadFile(const CloudFileMetadata &file,
 
   std::string filePath(
       std::filesystem::path(localAbsPath).parent_path().generic_string());
-  try {
+  /*try {
     if (!std::filesystem::exists(filePath)) {
       std::filesystem::create_directories(filePath);
     }
@@ -165,7 +177,7 @@ bool ApiClient::downloadFile(const CloudFileMetadata &file,
     std::cerr << "[API] Unable to create Directory ->" << filePath
               << " Error: " << e.what() << std::endl;
     return false;
-  }
+  }*/
   std::ofstream ofs(localAbsPath, std::ios::binary);
 
   if (!ofs) {
@@ -197,43 +209,48 @@ bool ApiClient::downloadFile(const CloudFileMetadata &file,
   return res && res->status == 200;
 }
 
-std::optional<std::string>
-ApiClient::uploadFile(const FileQueueEntry &file,
-                      const std::vector<std::string> &pathIds) {
-  std::ifstream ifs(file.absPath, std::ios::binary);
-  if (!ifs)
-    return std::nullopt;
+bool ApiClient::uploadFile(const FileQueueEntry &file,
+                           const std::vector<DirectoryMetadata> &pathIds,
+                           bool isModified) {
+  try {
+    std::ifstream ifs(file.absPath, std::ios::binary);
+    if (!ifs) {
+      std::cerr << "[API] Exception Opening a file: " << std::endl;
+      return false;
+    }
+    std::string content((std::istreambuf_iterator<char>(ifs)),
+                        (std::istreambuf_iterator<char>()));
 
-  std::string content((std::istreambuf_iterator<char>(ifs)),
-                      (std::istreambuf_iterator<char>()));
+    auto parts = parsePath(file.path);
+    json filestat;
+    filestat["filename"] = file.filename;
+    filestat["directory"] = parts.directory;
+    filestat["device"] = parts.device;
+    filestat["uuid"] = file.uuid;
+    filestat["origin"] = file.origin;
+    filestat["checksum"] = file.hashvalue;
+    filestat["size"] = file.size;
+    filestat["mtime"] = file.last_modified;
+    filestat["username"] = m_userEmail;
+    filestat["version"] = file.versions;
+    filestat["isModified"] = isModified;
+    if (!isModified)
+      filestat["pathids"] = pathIds;
+    filestat["type"] =
+        file.filename.substr(file.filename.find_last_of(".") + 1);
 
-  auto parts = parsePath(file.path);
-  json filestat;
-  filestat["filename"] = file.filename;
-  filestat["directory"] = parts.directory;
-  filestat["device"] = parts.device;
-  filestat["uuid"] = file.uuid;
-  filestat["origin"] = file.origin;
-  filestat["checksum"] = file.hashvalue;
-  filestat["size"] = file.size;
-  filestat["mtime"] = file.last_modified;
-  filestat["username"] = m_userEmail;
-  filestat["version"] = file.versions;
-  filestat["isModified"] = (file.sync_status == "modified");
-  filestat["pathids"] = pathIds;
-  filestat["type"] = file.filename.substr(file.filename.find_last_of(".") + 1);
+    httplib::UploadFormDataItems items = {
+        {"file", content, file.filename, "application/octet-stream"}};
 
-  httplib::UploadFormDataItems items = {
-      {"file", content, file.filename, "application/octet-stream"},
-      {"filestat", filestat.dump(), "", "application/json"}};
+    httplib::Headers headers = {{"filestat", filestat.dump()}};
 
-  auto res = m_impl->client.Post("/syncUpFile", items);
-  if (res && res->status == 200) {
-    auto resJson = json::parse(res->body);
-    return resJson["id"].get<std::string>();
+    auto res = m_impl->client.Post("/app/sync/syncUpFile", headers, items);
+
+    return res && res->status == 200;
+  } catch (const std::exception &e) {
+    std::cerr << "[API] " << e.what() << std::endl;
+    return false;
   }
-
-  return std::nullopt;
 }
 
 bool ApiClient::deleteFile(const FileQueueEntry &file) {
@@ -255,8 +272,8 @@ bool ApiClient::deleteFile(const FileQueueEntry &file) {
 
   data["fileIds"] = json::array({fileId});
 
-  auto res =
-      m_impl->client.Delete("/deleteFiles", data.dump(), "application/json");
+  auto res = m_impl->client.Delete("/app/sync/deleteFiles", data.dump(),
+                                   "application/json");
   return res && res->status == 200;
 }
 
@@ -274,31 +291,35 @@ bool ApiClient::renameFile(const FileQueueEntry &file) {
   json outerData;
   outerData["data"] = innerData;
 
-  auto res =
-      m_impl->client.Post("/renameFile", outerData.dump(), "application/json");
+  auto res = m_impl->client.Post("/app/sync/renameFile", outerData.dump(),
+                                 "application/json");
   return res && res->status == 200;
 }
 
 bool ApiClient::createFolder(const DirectoryMetadata &dir) {
-  std::string query = "/createFolder?path=" + urlEncode(dir.path) +
+  std::string query = "/app/sync/createFolder?path=" + urlEncode(dir.path) +
                       "&device=" + urlEncode(dir.device) +
                       "&username=" + urlEncode(m_userEmail) +
                       "&uuid=" + urlEncode(dir.uuid) +
-                      "&folder=" + urlEncode(dir.folder);
+                      "&folder=" + urlEncode(dir.folder) +
+                      "&created_at=" + urlEncode(dir.created_at);
 
   auto res = m_impl->client.Post(query.c_str());
+  std::cerr << "[API] ERROR: " << res.error() << " statuscode: " << res->status
+            << std::endl;
   return res && res->status == 200;
 }
 
 bool ApiClient::deleteFolder(const DirectoryMetadata &dir) {
   auto parts = parsePath(dir.path);
-  std::string query = "/deleteFolder?path=" + urlEncode(dir.path) +
+  std::string query = "/app/sync/deleteFolder?path=" + urlEncode(dir.path) +
                       "&folder=" + urlEncode(dir.folder) +
                       "&directory=" + urlEncode(parts.directory) +
                       "&username=" + urlEncode(m_userEmail) +
                       "&device=" + urlEncode(dir.device);
-
   auto res = m_impl->client.Delete(query.c_str());
+  std::cerr << "[API] ERROR: " << res.error() << " statuscode: " << res->status
+            << std::endl;
   return res && res->status == 200;
 }
 
@@ -308,8 +329,8 @@ bool ApiClient::renameFolder(const DirectoryQueueEntry &dir) {
   data["newPath"] = dir.path;
   data["username"] = m_userEmail;
 
-  auto res =
-      m_impl->client.Post("/renameFolder", data.dump(), "application/json");
+  auto res = m_impl->client.Post("/app/sync/renameFolder", data.dump(),
+                                 "application/json");
   return res && res->status == 200;
 }
 
@@ -329,14 +350,17 @@ ApiClient::PathParts ApiClient::parsePath(const std::string &path) {
     return {"/", "/"};
 
   std::string device = parts[0];
+  if (device == "/")
+    return {"/", "/"};
   std::string directory = "";
+
   if (parts.size() > 1) {
     for (size_t i = 1; i < parts.size(); ++i) {
       directory += parts[i] + (i == parts.size() - 1 ? "" : "/");
     }
   }
 
-  return {device, directory};
+  return {device, directory == "" ? "/" : directory};
 }
 
 } // namespace sync_app

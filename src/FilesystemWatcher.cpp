@@ -1,6 +1,7 @@
 #include "FilesystemWatcher.hpp"
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -13,7 +14,6 @@
 #endif
 
 namespace fs = std::filesystem;
-
 namespace sync_app {
 
 enum class SettleState { Polling, Settling };
@@ -49,7 +49,9 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
   std::map<std::string, PendingEvent> pendingEvents;
   std::mutex mtx;
   std::thread workerThread;
+  std::condition_variable cv;
   std::atomic<bool> workerRunning{false};
+  std::atomic<int> pendingCount{0};
   FilesystemWatcher::Callback callback;
 
   // Configurable intervals
@@ -58,9 +60,11 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
 
   void workerLoop() {
     while (workerRunning) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
+      //      std::this_thread::sleep_for(std::chrono::milliseconds(50));
       std::unique_lock<std::mutex> lock(mtx);
+      cv.wait(lock, [&] { return !workerRunning || !pendingEvents.empty(); });
+      if (!workerRunning)
+        break;
       auto now = std::chrono::steady_clock::now();
 
       for (auto it = pendingEvents.begin(); it != pendingEvents.end();) {
@@ -133,12 +137,25 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
       if (fs::exists(path)) {
         mtime = fs::last_write_time(path);
       }
+      bool wasEmpty = pendingEvents.empty();
       pendingEvents[path] =
           PendingEvent{event, mtime, now + pollInterval, SettleState::Polling};
+      if (wasEmpty) {
+        pendingCount = 1;
+        cv.notify_one();
+      } else {
+        ++pendingCount;
+      }
     } catch (...) {
+      bool wasEmpty = pendingEvents.empty();
       pendingEvents[path] =
           PendingEvent{event, (fs::file_time_type::min)(), now + pollInterval,
                        SettleState::Polling};
+      if (wasEmpty) {
+        pendingCount = 1;
+      } else {
+        ++pendingCount;
+      }
     }
   }
 
