@@ -39,6 +39,8 @@ private:
                                          const std::string &uuid);
   FileMetadata getFileMetadata(const CloudFileMetadata &cloudFile,
                                const std::string &absPath);
+  FileMetadata constructFileMetadata(const FileQueueEntry &f);
+
   std::vector<std::string> getPathComponents(const std::string &path);
   void
   processFilesToDownload(const std::vector<CloudFileMetadata> &filesToDownload);

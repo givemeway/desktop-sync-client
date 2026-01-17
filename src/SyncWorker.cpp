@@ -5,6 +5,7 @@
 #include "types.hpp"
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <iostream>

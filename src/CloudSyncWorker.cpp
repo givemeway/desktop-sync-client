@@ -5,6 +5,7 @@
 #include "ReconciliationService.hpp"
 #include "SyncWorker.hpp"
 #include "UuidUtils.hpp"
+#include "types.hpp"
 #include <chrono>
 #include <filesystem>
 #include <iostream>
@@ -107,6 +108,25 @@ FileMetadata CloudSyncWorker::getFileMetadata(const CloudFileMetadata &file,
   f.absPath = absPath;
   f.dirID = file.dirID;
   f.inode = m_scanner.getInode(absPath);
+  f.hashvalue = file.hashvalue;
+  f.last_modified = file.last_modified;
+  f.lastSyncedHashValue = file.lastSyncedHashValue;
+  f.origin = file.origin;
+  f.uuid = file.uuid;
+  f.size = file.size;
+  f.versions = file.versions;
+  f.lastSynced = getCurrentTime();
+  return f;
+}
+
+FileMetadata
+CloudSyncWorker::constructFileMetadata(const FileQueueEntry &file) {
+  FileMetadata f;
+  f.filename = file.filename;
+  f.path = file.path;
+  f.absPath = file.absPath;
+  f.dirID = file.dirID;
+  f.inode = file.inode;
   f.hashvalue = file.hashvalue;
   f.last_modified = file.last_modified;
   f.lastSyncedHashValue = file.lastSyncedHashValue;
@@ -509,8 +529,12 @@ void CloudSyncWorker::processQueueToSyncUp() {
         }
         auto isQRemoved =
             m_dbManager.deleteDirectoryQueue(dq.device, dq.folder, dq.path);
-        if (!isQRemoved) {
+        DirectoryMetadata dir = getDirectoryMetadata(dq.path, dq.uuid);
+        auto isDirUpdated = m_dbManager.updateDirectory(dir);
+        if (!isQRemoved || !isDirUpdated) {
           // retry
+          std::cerr << "[cloudsyncworker] directory and queue update failed"
+                    << std::endl;
         }
         std::cout << "[cloudsyncworker] folder -> " << dq.path
                   << " created in cloud" << std::endl;
@@ -520,7 +544,9 @@ void CloudSyncWorker::processQueueToSyncUp() {
         auto d =
             m_dbManager.getDirectoryQueueByPath(dq.device, dq.folder, dq.path);
         bool isRenamed = m_apiClient.renameFolder(*d);
-        if (!isRenamed) {
+        DirectoryMetadata dir = getDirectoryMetadata(dq.path, dq.uuid);
+        auto isDirUpdated = m_dbManager.updateDirectory(dir);
+        if (!isRenamed || isDirUpdated) {
           // retry;
           std::cout << "[cloudsyncworker] Error renaming -> " << *d->old_path
                     << " => " << d->path << "in cloud" << std::endl;
@@ -537,7 +563,6 @@ void CloudSyncWorker::processQueueToSyncUp() {
       if (dq.sync_status == syncStatusToString(SyncStatus::DELETE)) {
         // delete file
         auto d = m_dbManager.getDirectoryByPath(dq.device, dq.folder, dq.path);
-        std::cout << "[cloudsyncworker] d:" << d.has_value() << std::endl;
         bool isCreated = m_apiClient.deleteFolder(*d);
         if (!isCreated) {
           // retry;
@@ -560,7 +585,9 @@ void CloudSyncWorker::processQueueToSyncUp() {
         std::optional<std::vector<DirectoryMetadata>> dirs =
             m_dbManager.getDirsByPath(fq.path);
         bool isUploaded = m_apiClient.uploadFile(fq, *dirs);
-        if (!isUploaded) {
+        FileMetadata f = constructFileMetadata(fq);
+        bool isFileUpdated = m_dbManager.updateFile(f);
+        if (!isUploaded || !isFileUpdated) {
           // retry upload if it fails
           std::cout << "[cloudsyncworker] unable to upload file->" << fq.absPath
                     << std::endl;
@@ -578,7 +605,9 @@ void CloudSyncWorker::processQueueToSyncUp() {
       if (fq.sync_status == syncStatusToString(SyncStatus::RENAME)) {
         // rename file
         bool isUploaded = m_apiClient.renameFile(fq);
-        if (!isUploaded) {
+        FileMetadata f = constructFileMetadata(fq);
+        bool isFileUpdated = m_dbManager.updateFile(f);
+        if (!isUploaded || !isFileUpdated) {
           // retry upload if it fails
           std::cout << "[cloudsyncworker] unable to rename file->"
                     << *fq.old_filename << " to ->" << fq.filename << std::endl;
@@ -597,7 +626,9 @@ void CloudSyncWorker::processQueueToSyncUp() {
       if (fq.sync_status == syncStatusToString(SyncStatus::MODIFIED)) {
         // update file
         bool isUploaded = m_apiClient.uploadFile(fq, {}, true);
-        if (!isUploaded) {
+        FileMetadata f = constructFileMetadata(fq);
+        bool isFileUpdated = m_dbManager.updateFile(f);
+        if (!isUploaded || !isFileUpdated) {
           // retry upload if it fails
           std::cout << "[cloudsyncworker] unable to modify file->" << fq.absPath
                     << std::endl;

@@ -1,4 +1,5 @@
 #include "DatabaseManager.hpp"
+#include "types.hpp"
 #include <filesystem>
 #include <iostream>
 #include <mutex>
@@ -225,13 +226,15 @@ bool DatabaseManager::insertFile(const FileMetadata &file,
 
 bool DatabaseManager::updateFile(const FileMetadata &file) {
   try {
-    auto existingFile = m_impl->storage.count<FileMetadata>(
-        where(c(&FileMetadata::path) == file.path &&
-              c(&FileMetadata::filename) == file.filename));
+    /*    auto existingFile = m_impl->storage.count<FileMetadata>(
+            where(c(&FileMetadata::path) == file.path &&
+                  c(&FileMetadata::filename) == file.filename));
 
-    if (existingFile) {
-      m_impl->storage.update<FileMetadata>(file);
-    }
+        if (existingFile) {
+          m_impl->storage.update<FileMetadata>(file);
+        }
+        */
+    m_impl->storage.replace<FileMetadata>(file);
     return true;
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error updating ->" << file.absPath << " in File Table =>"
@@ -440,8 +443,11 @@ bool DatabaseManager::insertFileAndQueueWithDirectory(
 
 bool DatabaseManager::updateDirectory(const DirectoryMetadata &dir) {
   try {
-    m_impl->storage.update<DirectoryMetadata>(dir);
-    return true;
+    return m_impl->storage.transaction([&] {
+      m_impl->storage.replace<DirectoryMetadata>(dir);
+      return true;
+    });
+
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error updating ->" << dir.path
               << " into Directory Table =>" << e.what() << std::endl;

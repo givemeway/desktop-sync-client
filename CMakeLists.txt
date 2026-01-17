@@ -68,6 +68,30 @@ if(WIN32)
             DESTINATION bin/magic
             FILES_MATCHING PATTERN "*")
     
+    # Copy MinGW runtime DLLs
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        get_filename_component(MINGW_BIN_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
+        
+        set(MINGW_DLLS 
+            "${MINGW_BIN_DIR}/libgcc_s_seh-1.dll"
+            "${MINGW_BIN_DIR}/libstdc++-6.dll"
+            "${MINGW_BIN_DIR}/libwinpthread-1.dll"
+        )
+        
+        foreach(DLL ${MINGW_DLLS})
+            if(EXISTS ${DLL})
+                # Copy for development (build folder)
+                add_custom_command(TARGET sync_client POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${DLL}
+                    $<TARGET_FILE_DIR:sync_client>
+                )
+                # Mark for installation
+                install(FILES ${DLL} DESTINATION bin)
+            endif()
+        endforeach()
+    endif()
+
     # Copy other vcpkg DLLs if any
     install(DIRECTORY ${CMAKE_BINARY_DIR}/$<CONFIG>/ 
             DESTINATION bin 
