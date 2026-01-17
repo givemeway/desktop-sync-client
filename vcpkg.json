@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "sync-client-cpp",
+  "version": "1.0.0",
+  "description": "Cross-platform desktop sync client",
+  "dependencies": [
+    "libmagic",
+    "nlohmann-json",
+    "curl"
+  ]
+}

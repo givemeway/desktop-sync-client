@@ -1,4 +1,5 @@
 #include "ApiClient.hpp"
+#include "MimeTypeDetector.hpp"
 #include "httplib.h"
 #include <fstream>
 #include <iomanip>
@@ -236,8 +237,16 @@ bool ApiClient::uploadFile(const FileQueueEntry &file,
     filestat["isModified"] = isModified;
     if (!isModified)
       filestat["pathids"] = pathIds;
-    filestat["type"] =
-        file.filename.substr(file.filename.find_last_of(".") + 1);
+    // Detect MIME type on-the-fly using libmagic
+    MimeTypeDetector detector;
+    std::string detectedMime = detector.getMimeType(file.absPath);
+    
+    if (!detectedMime.empty()) {
+      filestat["type"] = detectedMime;
+    } else {
+      filestat["type"] =
+          file.filename.substr(file.filename.find_last_of(".") + 1);
+    }
 
     httplib::UploadFormDataItems items = {
         {"file", content, file.filename, "application/octet-stream"}};
