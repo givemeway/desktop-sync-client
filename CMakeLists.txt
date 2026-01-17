@@ -41,17 +41,16 @@ add_executable(sync_client
   )
 
 # Find libmagic from vcpkg
+# Find libmagic from vcpkg
 find_package(unofficial-libmagic REQUIRED)
 add_definitions(-DHAVE_LIBMAGIC)
 add_definitions(-DMAGIC_DB_PATH="${unofficial-libmagic_DICTIONARY}")
-target_link_libraries(sync_client PRIVATE unofficial::libmagic::libmagic)
 message(STATUS "libmagic found - using content-based MIME detection")
 
 # Link Libraries
 if(WIN32)
     # Required for cpp-httplib on Windows
-    target_link_libraries(sync_client sqlite3 efsw-static ws2_32 crypt32)
-    target_link_options(sync_client PRIVATE -static-libgcc -static-libstdc++ -static)
+    target_link_libraries(sync_client PRIVATE sqlite3 efsw-static ws2_32 crypt32 unofficial::libmagic::libmagic)
 else()
     target_link_libraries(sync_client sqlite3 efsw-static pthread unofficial::libmagic::libmagic)
 endif()
