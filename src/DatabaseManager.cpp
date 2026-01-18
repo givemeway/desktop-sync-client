@@ -140,6 +140,7 @@ pathParts DatabaseManager::getFolderDevice(const std::filesystem::path &path) {
 
 // File operations
 std::optional<std::vector<FileMetadata>> DatabaseManager::getAllFiles() {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.get_all<FileMetadata>();
   } catch (const std::exception &e) {
@@ -148,6 +149,7 @@ std::optional<std::vector<FileMetadata>> DatabaseManager::getAllFiles() {
 }
 
 std::optional<std::vector<FileQueueEntry>> DatabaseManager::getAllQueueFiles() {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.get_all<FileQueueEntry>();
   } catch (std::exception &e) {
@@ -158,6 +160,7 @@ std::optional<std::vector<FileQueueEntry>> DatabaseManager::getAllQueueFiles() {
 
 std::optional<FileMetadata>
 DatabaseManager::getFileByOrigin(const std::string &origin) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     auto results = m_impl->storage.get_all<FileMetadata>(
         where(c(&FileMetadata::origin) == origin));
@@ -173,6 +176,7 @@ DatabaseManager::getFileByOrigin(const std::string &origin) {
 std::optional<FileMetadata>
 DatabaseManager::getFileByPath(const std::string &path,
                                const std::string &filename) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.get<FileMetadata>(path, filename);
   } catch (const std::exception &e) {
@@ -184,6 +188,7 @@ DatabaseManager::getFileByPath(const std::string &path,
 std::optional<FileQueueEntry>
 DatabaseManager::getFileQueueByPath(const std::string &path,
                                     const std::string &filename) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     auto results = m_impl->storage.get_all<FileQueueEntry>(
         where(c(&FileQueueEntry::path) == path &&
@@ -199,6 +204,7 @@ DatabaseManager::getFileQueueByPath(const std::string &path,
 
 bool DatabaseManager::insertFile(const FileMetadata &file,
                                  const FileQueueEntry &fileQueue) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&]() {
       DirectoryQueueEntry dq;
@@ -225,6 +231,7 @@ bool DatabaseManager::insertFile(const FileMetadata &file,
 }
 
 bool DatabaseManager::updateFile(const FileMetadata &file) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     /*    auto existingFile = m_impl->storage.count<FileMetadata>(
             where(c(&FileMetadata::path) == file.path &&
@@ -246,6 +253,7 @@ bool DatabaseManager::updateFile(const FileMetadata &file) {
 bool DatabaseManager::updateFileWithTransaction(const FileMetadata &f,
                                                 const std::string &path,
                                                 const std::string &filename) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&] {
       m_impl->storage.remove<FileMetadata>(path, filename);
@@ -262,6 +270,7 @@ bool DatabaseManager::updateFileWithTransaction(const FileMetadata &f,
 bool DatabaseManager::deleteFile(const std::string &path,
                                  const std::string &filename,
                                  const FileQueueEntry &fq) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&] {
       m_impl->storage.remove<FileMetadata>(path, filename);
@@ -277,6 +286,7 @@ bool DatabaseManager::deleteFile(const std::string &path,
 
 bool DatabaseManager::deleteFileByPath(const std::string &path,
                                        const std::string &filename) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     m_impl->storage.remove<FileMetadata>(path, filename);
     return true;
@@ -287,6 +297,7 @@ bool DatabaseManager::deleteFileByPath(const std::string &path,
 }
 
 bool DatabaseManager::upsertFile(const FileMetadata &file) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     m_impl->storage.replace<FileMetadata>(file);
     return true;
@@ -298,6 +309,7 @@ bool DatabaseManager::upsertFile(const FileMetadata &file) {
 }
 
 bool DatabaseManager::deleteFilesByPath(const std::string &path) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
 
     m_impl->storage.remove_all<FileMetadata>(
@@ -314,6 +326,7 @@ bool DatabaseManager::deleteFilesByPath(const std::string &path) {
 // folder/New folder"y operations
 std::optional<std::vector<DirectoryMetadata>>
 DatabaseManager::getAllDirectories() {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.get_all<DirectoryMetadata>();
   } catch (const std::exception &e) {
@@ -325,6 +338,7 @@ std::optional<DirectoryMetadata>
 DatabaseManager::getDirectoryByPath(const std::string &device,
                                     const std::string &folder,
                                     const std::string &path) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
 
     auto results = m_impl->storage.get_all<DirectoryMetadata>(
@@ -345,6 +359,7 @@ std::optional<DirectoryQueueEntry>
 DatabaseManager::getDirectoryQueueByPath(const std::string &device,
                                          const std::string &folder,
                                          const std::string &path) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
 
     auto results = m_impl->storage.get_all<DirectoryQueueEntry>(
@@ -363,6 +378,7 @@ DatabaseManager::getDirectoryQueueByPath(const std::string &device,
 
 std::optional<std::vector<FileMetadata>>
 DatabaseManager::getAllFilesInDirectory(const std::string &path) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
 
     return m_impl->storage.get_all<FileMetadata>(
@@ -377,6 +393,7 @@ DatabaseManager::getAllFilesInDirectory(const std::string &path) {
 
 bool DatabaseManager::insertDirectory(const DirectoryMetadata &dir,
                                       const DirectoryQueueEntry &dirQueue) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&] {
       m_impl->storage.replace<DirectoryMetadata>(dir);
@@ -392,6 +409,7 @@ bool DatabaseManager::insertDirectory(const DirectoryMetadata &dir,
 
 bool DatabaseManager::insertFileWithDirectory(
     FileMetadata &f, const std::vector<DirectoryMetadata> &dirs) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([this, &dirs, &f]() {
       for (auto &dir : dirs) {
@@ -413,6 +431,7 @@ bool DatabaseManager::insertFileAndQueueWithDirectory(
     FileQueueEntry &conflictedFileQueue,
     DirectoryQueueEntry &conflictedDirQueue,
     const std::vector<DirectoryMetadata> &dirs) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&]() {
       for (auto &dir : dirs) {
@@ -442,6 +461,7 @@ bool DatabaseManager::insertFileAndQueueWithDirectory(
 }
 
 bool DatabaseManager::updateDirectory(const DirectoryMetadata &dir) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&] {
       m_impl->storage.replace<DirectoryMetadata>(dir);
@@ -456,6 +476,7 @@ bool DatabaseManager::updateDirectory(const DirectoryMetadata &dir) {
 }
 
 bool DatabaseManager::deleteDirectory(const std::string &path) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&]() {
       m_impl->storage.remove_all<FileMetadata>(
@@ -475,6 +496,7 @@ bool DatabaseManager::deleteDirectory(const std::string &path) {
 
 bool DatabaseManager::deleteFolderWithTransaction(
     const std::string &path, const DirectoryQueueEntry &dq) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&]() {
       m_impl->storage.remove_all<FileMetadata>(
@@ -508,6 +530,7 @@ bool DatabaseManager::deleteFolderWithTransaction(
 bool DatabaseManager::moveDirectory(const std::string &path,
                                     const std::string &oldPath,
                                     const DirectoryQueueEntry &dq) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&]() {
       auto subDirs = m_impl->storage.get_all<DirectoryMetadata>(
@@ -566,6 +589,7 @@ bool DatabaseManager::moveDirectory(const std::string &path,
 }
 
 bool DatabaseManager::upsertDirectory(const DirectoryMetadata &dir) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     // Optimized check by (device, folder, path) using where clause
     m_impl->storage.replace<DirectoryMetadata>(dir);
@@ -577,6 +601,7 @@ bool DatabaseManager::upsertDirectory(const DirectoryMetadata &dir) {
 }
 
 bool DatabaseManager::upsertFileQueue(const FileQueueEntry &entry) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     m_impl->storage.replace<FileQueueEntry>(entry);
     return true;
@@ -590,6 +615,7 @@ bool DatabaseManager::upsertFileQueue(const FileQueueEntry &entry) {
 }
 
 bool DatabaseManager::upsertDirectoryQueue(const DirectoryQueueEntry &entry) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     // Optimized check by (device, folder, path) using where clause
     m_impl->storage.replace<DirectoryQueueEntry>(entry);
@@ -601,6 +627,7 @@ bool DatabaseManager::upsertDirectoryQueue(const DirectoryQueueEntry &entry) {
 }
 bool DatabaseManager::moveDirectoryQueue(const std::string &path,
                                          const std::string &oldPath) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&]() {
       auto subDirs = m_impl->storage.get_all<DirectoryMetadata>(
@@ -647,6 +674,7 @@ bool DatabaseManager::moveDirectoryQueue(const std::string &path,
 
 // File Queue operations
 std::optional<std::vector<FileQueueEntry>> DatabaseManager::getFileQueue() {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.get_all<FileQueueEntry>();
   } catch (const std::exception &e) {
@@ -655,6 +683,7 @@ std::optional<std::vector<FileQueueEntry>> DatabaseManager::getFileQueue() {
 }
 
 bool DatabaseManager::insertFileQueue(const FileQueueEntry &entry) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     m_impl->storage.replace<FileQueueEntry>(entry);
     return true;
@@ -666,6 +695,7 @@ bool DatabaseManager::insertFileQueue(const FileQueueEntry &entry) {
 }
 
 bool DatabaseManager::updateFileQueue(const FileQueueEntry &entry) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     m_impl->storage.update<FileQueueEntry>(entry);
     return true;
@@ -678,6 +708,7 @@ bool DatabaseManager::updateFileQueue(const FileQueueEntry &entry) {
 
 std::optional<std::vector<DirectoryQueueEntry>>
 DatabaseManager::getAllQueueDirectories() {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.get_all<DirectoryQueueEntry>();
   } catch (const std::exception &e) {
@@ -688,6 +719,7 @@ DatabaseManager::getAllQueueDirectories() {
 
 bool DatabaseManager::deleteFileQueue(const std::string &path,
                                       const std::string &filename) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     m_impl->storage.remove<FileQueueEntry>(path, filename);
     return true;
@@ -701,6 +733,7 @@ bool DatabaseManager::deleteFileQueue(const std::string &path,
 // Directory Queue operations
 std::optional<std::vector<DirectoryQueueEntry>>
 DatabaseManager::getDirectoryQueue() {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
 
     return m_impl->storage.get_all<DirectoryQueueEntry>();
@@ -715,6 +748,7 @@ DatabaseManager::getDirectoryQueue() {
 
 std::optional<std::vector<DirectoryMetadata>>
 DatabaseManager::getDirsByPath(const std::string &path) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.get_all<DirectoryMetadata>(
         where(c(&DirectoryMetadata::path) == path ||
@@ -728,6 +762,7 @@ DatabaseManager::getDirsByPath(const std::string &path) {
 
 bool DatabaseManager::createDirectoryPaths(
     const std::vector<DirectoryMetadata> &dirs) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&]() {
       for (auto dir : dirs) {
@@ -742,6 +777,7 @@ bool DatabaseManager::createDirectoryPaths(
 }
 
 bool DatabaseManager::insertDirectoryQueue(const DirectoryQueueEntry &entry) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     m_impl->storage.replace<DirectoryQueueEntry>(entry);
     return true;
@@ -753,6 +789,7 @@ bool DatabaseManager::insertDirectoryQueue(const DirectoryQueueEntry &entry) {
 }
 
 bool DatabaseManager::updateDirectoryQueue(const DirectoryQueueEntry &entry) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     m_impl->storage.update<DirectoryQueueEntry>(entry);
     return true;
@@ -766,6 +803,7 @@ bool DatabaseManager::updateDirectoryQueue(const DirectoryQueueEntry &entry) {
 bool DatabaseManager::deleteDirectoryQueue(const std::string &device,
                                            const std::string &folder,
                                            const std::string &path) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     m_impl->storage.remove<DirectoryQueueEntry>(device, folder, path);
     return true;

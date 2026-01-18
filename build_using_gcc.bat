@@ -13,6 +13,7 @@ mkdir build
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ^
   -DCMAKE_C_COMPILER=gcc ^
   -DCMAKE_CXX_COMPILER=g++ ^
+  -DCMAKE_BUILD_TYPE=Debug ^
   -DVCPKG_TARGET_TRIPLET=x64-mingw-static
 
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
@@ -20,7 +21,7 @@ if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 REM Second configure not needed anymore
 REM %CMAKE_EXE% -S . -B build
 
-%CMAKE_EXE% --build build
+%CMAKE_EXE% --build build --config Debug
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 
 echo Build Successful!

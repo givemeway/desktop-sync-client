@@ -57,13 +57,30 @@ bool CloudSyncWorker::pollCloudToSyncToLocal() {
               << std::endl;
     std::cout << "[cloudsyncworker] filesToUpdate: " << filesToUpdate.size()
               << std::endl;
+    std::cout << "[cloudsyncworker] Calling processFilesToDownload..."
+              << std::endl;
     processFilesToDownload(filesToDownload);
+    std::cout << "[cloudsyncworker] Calling processFilesToDelete..."
+              << std::endl;
     processFilesToDelete(filesToDeleteLocal);
+    std::cout << "[cloudsyncworker] Calling processFoldersToCreate..."
+              << std::endl;
     processFoldersToCreate(foldersToCreateLocal);
+    std::cout << "[cloudsyncworker] Calling processFoldersToDelete..."
+              << std::endl;
     processFoldersToDelete(foldersToDeleteLocal);
+    std::cout << "[cloudsyncworker] Calling processFilesToRename..."
+              << std::endl;
     processFilesToRename(filesToRename);
+    std::cout << "[cloudsyncworker] Calling processFilesInConflict..."
+              << std::endl;
     processFilesInConflict(filesInConflict);
+    std::cout << "[cloudsyncworker] Calling processFilesToUpdate..."
+              << std::endl;
     processFilesToUpdate(filesToUpdate);
+    std::cout
+        << "[cloudsyncworker] pollCloudToSyncToLocal finished successfully."
+        << std::endl;
     return true;
   } else {
     return false;
@@ -78,26 +95,24 @@ std::string CloudSyncWorker::getCurrentTime() {
 }
 std::vector<std::string>
 CloudSyncWorker::getPathComponents(const std::string &path) {
-  if (path == "/") {
-    return std::vector<std::string>{"/"};
-  }
-  std::vector<std::string> tokens;
-  std::stringstream ss(path);
-  std::string token;
-  while (std::getline(ss, token, '/')) {
-    tokens.push_back(token);
-  }
-  if (tokens.size() <= 2 && tokens[1].empty()) {
-    return std::vector<std::string>{"/"};
+  if (path == "/" || path.empty()) {
+    return {"/"};
   }
 
   std::vector<std::string> pathTree;
-  for (int i = 1; i < tokens.size(); i++) {
-    std::string path = "";
-    for (int j = 1; j < i + 1; j++) {
-      path += "/" + tokens[j];
-    }
-    pathTree.push_back(path);
+  std::string currentPath = "";
+  std::stringstream ss(path);
+  std::string token;
+
+  while (std::getline(ss, token, '/')) {
+    if (token.empty())
+      continue;
+    currentPath += "/" + token;
+    pathTree.push_back(currentPath);
+  }
+
+  if (pathTree.empty()) {
+    return {"/"};
   }
   return pathTree;
 }
@@ -172,7 +187,12 @@ CloudSyncWorker::getDirectoryMetadata(const std::string &path,
 
 void CloudSyncWorker::processFilesToDownload(
     const std::vector<CloudFileMetadata> &filesToDownload) {
+  int count = 0;
   for (auto &file : filesToDownload) {
+    count++;
+    std::cout << "[cloudsyncworker] [" << count << "/" << filesToDownload.size()
+              << "] Processing download for: " << file.filename << " in "
+              << file.path << std::endl;
 
     std::string fileAbsPath(file.path == "/"
                                 ? m_syncPath + "/" + file.filename
@@ -214,7 +234,6 @@ void CloudSyncWorker::processFilesToDownload(
     {
       std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
       pathParts fp = m_dbManager.getFolderDevice(fs::path(file.path));
-
       if (downloadStatus) {
         std::vector<DirectoryMetadata> dirs;
         FileMetadata f(getFileMetadata(file, fileAbsPath));
@@ -222,13 +241,21 @@ void CloudSyncWorker::processFilesToDownload(
             m_dbManager.getDirectoryByPath(fp.device, fp.folder, file.path);
         if (!dirExists.has_value()) {
           std::vector<std::string> paths = getPathComponents(file.path);
-          for (auto path : paths) {
-            auto uuid = (*file.dirIDs).find(path)->second;
-            auto d = getDirectoryMetadata(path, uuid);
-            dirs.push_back(d);
+          for (auto &path : paths) {
+            std::string uuid = "";
+            if (file.dirIDs && file.dirIDs->count(path)) {
+              uuid = file.dirIDs->at(path);
+            } else if (path == file.path) {
+              uuid = file.dirID;
+            }
+
+            if (!uuid.empty()) {
+              auto d = getDirectoryMetadata(path, uuid);
+              dirs.push_back(d);
+            }
           }
         } else {
-          auto d = getDirectoryMetadata(f.path, file.dirID);
+          auto d = getDirectoryMetadata(file.path, file.dirID);
           dirs.push_back(d);
         }
         m_dbManager.insertFileWithDirectory(f, dirs);
@@ -288,9 +315,17 @@ void CloudSyncWorker::processFoldersToCreate(
       auto folderPaths = getPathComponents(folder.path);
       std::vector<DirectoryMetadata> dirs;
       for (auto &path : folderPaths) {
-        auto uuid = (*folder.dirIDs).find(path)->second;
-        auto d = getDirectoryMetadata(path, uuid);
-        dirs.push_back(d);
+        std::string uuid = "";
+        if (folder.dirIDs && folder.dirIDs->count(path)) {
+          uuid = folder.dirIDs->at(path);
+        } else if (path == folder.path) {
+          uuid = folder.uuid;
+        }
+
+        if (!uuid.empty()) {
+          auto d = getDirectoryMetadata(path, uuid);
+          dirs.push_back(d);
+        }
       }
       auto result = m_dbManager.createDirectoryPaths(dirs);
       if (!result) {
@@ -439,10 +474,17 @@ void CloudSyncWorker::processFilesInConflict(
         // inserted into Directory DB.
         for (auto &path : paths) {
           DirectoryMetadata d;
-          std::string uuid;
-          uuid = (*file.dirIDs).find(path)->second;
-          d = getDirectoryMetadata(path, uuid);
-          dirs.push_back(d);
+          std::string uuid = "";
+          if (file.dirIDs && file.dirIDs->count(path)) {
+            uuid = file.dirIDs->at(path);
+          } else if (path == file.path) {
+            uuid = file.dirID;
+          }
+
+          if (!uuid.empty()) {
+            d = getDirectoryMetadata(path, uuid);
+            dirs.push_back(d);
+          }
         }
         FileMetadata cloudFile(getFileMetadata(file, absPath));
         FileMetadata conflictedFile(getFileMetadata(file, newAbsPath));

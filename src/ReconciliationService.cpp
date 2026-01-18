@@ -33,25 +33,23 @@ std::string ReconciliationService::getUniqueKey(const std::string &dir,
 }
 std::vector<std::string>
 ReconciliationService::getPathComponents(const std::string &path) {
-  if (path == "/")
-    return std::vector<std::string>{"/"};
-  std::vector<std::string> tokens;
-  std::stringstream ss(path);
-  std::string token;
-  while (std::getline(ss, token, '/')) {
-    tokens.push_back(token);
-  }
-  if (tokens.size() <= 2 && tokens[1].empty()) {
-    return std::vector<std::string>{"/"};
+  if (path == "/" || path.empty()) {
+    return {"/"};
   }
 
   std::vector<std::string> pathTree;
-  for (int i = 1; i < tokens.size(); i++) {
-    std::string path = "";
-    for (int j = 1; j < i + 1; j++) {
-      path += "/" + tokens[j];
-    }
-    pathTree.push_back(path);
+  std::string currentPath = "";
+  std::stringstream ss(path);
+  std::string token;
+  while (std::getline(ss, token, '/')) {
+    if (token.empty())
+      continue;
+    currentPath += "/" + token;
+    pathTree.push_back(currentPath);
+  }
+
+  if (pathTree.empty()) {
+    return {"/"};
   }
   return pathTree;
 }

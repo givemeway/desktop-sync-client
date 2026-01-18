@@ -50,7 +50,11 @@ message(STATUS "libmagic found - using content-based MIME detection")
 # Link Libraries
 if(WIN32)
     # Required for cpp-httplib on Windows
-    target_link_libraries(sync_client PRIVATE sqlite3 efsw-static ws2_32 crypt32 unofficial::libmagic::libmagic)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_link_libraries(sync_client PRIVATE sqlite3 efsw-static ws2_32 crypt32 unofficial::libmagic::libmagic pthread)
+    else()
+        target_link_libraries(sync_client PRIVATE sqlite3 efsw-static ws2_32 crypt32 unofficial::libmagic::libmagic)
+    endif()
 else()
     target_link_libraries(sync_client sqlite3 efsw-static pthread unofficial::libmagic::libmagic)
 endif()

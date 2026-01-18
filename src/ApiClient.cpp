@@ -51,24 +51,23 @@ ApiClient::ApiClient(const std::string &baseUrl, const std::string &userEmail)
 ApiClient::~ApiClient() = default;
 
 std::vector<std::string> ApiClient::getPathComponents(const std::string &path) {
-
-  std::vector<std::string> tokens;
+  if (path == "/" || path.empty()) {
+    return {"/"};
+  }
+  
+  std::vector<std::string> pathTree;
+  std::string currentPath = "";
   std::stringstream ss(path);
   std::string token;
+  
   while (std::getline(ss, token, '/')) {
-    tokens.push_back(token);
+    if (token.empty()) continue;
+    currentPath += "/" + token;
+    pathTree.push_back(currentPath);
   }
-  if (tokens.size() <= 2 && tokens[1].empty()) {
-    return std::vector<std::string>{"/"};
-  }
-
-  std::vector<std::string> pathTree;
-  for (int i = 1; i < tokens.size(); i++) {
-    std::string path = "";
-    for (int j = 1; j < i + 1; j++) {
-      path += "/" + tokens[j];
-    }
-    pathTree.push_back(path);
+  
+  if (pathTree.empty()) {
+    return {"/"};
   }
   return pathTree;
 }
@@ -159,6 +158,7 @@ std::optional<CloudMetadataResult> ApiClient::getMetadata() {
 
 bool ApiClient::downloadFile(const CloudFileMetadata &file,
                              const std::string &localAbsPath) {
+  std::cout << "[API] Starting download for: " << file.filename << " -> " << localAbsPath << std::endl;
   auto parts = parsePath(file.path);
   std::string mtime;
 
@@ -170,15 +170,7 @@ bool ApiClient::downloadFile(const CloudFileMetadata &file,
 
   std::string filePath(
       std::filesystem::path(localAbsPath).parent_path().generic_string());
-  /*try {
-    if (!std::filesystem::exists(filePath)) {
-      std::filesystem::create_directories(filePath);
-    }
-  } catch (const std::exception &e) {
-    std::cerr << "[API] Unable to create Directory ->" << filePath
-              << " Error: " << e.what() << std::endl;
-    return false;
-  }*/
+
   std::ofstream ofs(localAbsPath, std::ios::binary);
 
   if (!ofs) {
@@ -187,6 +179,7 @@ bool ApiClient::downloadFile(const CloudFileMetadata &file,
     return false;
   }
 
+  std::cout << "[API] Sending request to: " << query << std::endl;
   auto res = m_impl->client.Get(
       query.c_str(),
       [&mtime](const httplib::Response &response) {
@@ -207,20 +200,33 @@ bool ApiClient::downloadFile(const CloudFileMetadata &file,
         return true;
       });
   ofs.close();
-  return res && res->status == 200;
+  bool success = res && res->status == 200;
+  if (success) {
+    std::cout << "[API] Download successful for: " << file.filename << std::endl;
+  } else {
+    std::cerr << "[API] Download failed for: " << file.filename << " (res=" << (res ? "exists" : "null") << ")" << std::endl;
+  }
+  return success;
 }
 
 bool ApiClient::uploadFile(const FileQueueEntry &file,
                            const std::vector<DirectoryMetadata> &pathIds,
                            bool isModified) {
   try {
-    std::ifstream ifs(file.absPath, std::ios::binary);
+    std::ifstream ifs(file.absPath, std::ios::binary | std::ios::ate);
     if (!ifs) {
-      std::cerr << "[API] Exception Opening a file: " << std::endl;
+      std::cerr << "[API] Exception Opening a file: " << file.absPath << std::endl;
       return false;
     }
-    std::string content((std::istreambuf_iterator<char>(ifs)),
-                        (std::istreambuf_iterator<char>()));
+    std::streamsize fileSize = ifs.tellg();
+    ifs.seekg(0, std::ios::beg);
+
+    // Limit memory usage for very large files if needed, 
+    // but for now let's at least avoid unnecessary reallocations
+    std::string content;
+    content.reserve(fileSize);
+    content.assign((std::istreambuf_iterator<char>(ifs)),
+                   (std::istreambuf_iterator<char>()));
 
     auto parts = parsePath(file.path);
     json filestat;
