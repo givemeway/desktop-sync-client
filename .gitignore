@@ -45,3 +45,6 @@ build
 
 # debug information files
 *.dwo
+
+#vcpkg installation path
+vcpkg_installed

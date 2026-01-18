@@ -18,7 +18,7 @@ std::mutex cv_m;
 std::condition_variable cv;
 const std::string dbPath = "sync_client.db";
 #ifdef _WIN32
-const std::string syncFolder = "C:/Users/sandk/Desktop/sync_folder";
+const std::string syncFolder = "C:/Users/Sandeep Kumar/Desktop/sync_folder";
 #else
 const std::string syncFolder = "/users/sandeep/Desktop/sync-folder";
 #endif

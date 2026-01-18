@@ -12,7 +12,8 @@ mkdir build
   -G "MinGW Makefiles"  ^
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ^
   -DCMAKE_C_COMPILER=gcc ^
-  -DCMAKE_CXX_COMPILER=g++
+  -DCMAKE_CXX_COMPILER=g++ ^
+  -DVCPKG_TARGET_TRIPLET=x64-mingw-static
 
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 

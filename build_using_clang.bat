@@ -8,7 +8,12 @@ mkdir build
 %CMAKE_EXE% -S . -B build ^
   -G "MinGW Makefiles" ^
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ^
-  -DCMAKE_BUILD_TYPE=Debug
+  -DCMAKE_C_COMPILER=clang ^
+  -DCMAKE_CXX_COMPILER=clang++ ^
+  -DCMAKE_C_FLAGS="--target=x86_64-w64-windows-gnu" ^
+  -DCMAKE_CXX_FLAGS="--target=x86_64-w64-windows-gnu" ^
+  -DCMAKE_BUILD_TYPE=Debug ^
+  -DVCPKG_TARGET_TRIPLET=x64-mingw-static
 
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 
