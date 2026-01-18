@@ -315,8 +315,8 @@ bool ApiClient::createFolder(const DirectoryMetadata &dir) {
                       "&created_at=" + urlEncode(dir.created_at);
 
   auto res = m_impl->client.Post(query.c_str());
-  std::cerr << "[API] ERROR: " << res.error() << " statuscode: " << res->status
-            << std::endl;
+  std::cerr << "[API] ERROR: " << res.error()
+            << " | value returned: " << (res && res->status) << std::endl;
   return res && res->status == 200;
 }
 
@@ -328,8 +328,8 @@ bool ApiClient::deleteFolder(const DirectoryMetadata &dir) {
                       "&username=" + urlEncode(m_userEmail) +
                       "&device=" + urlEncode(dir.device);
   auto res = m_impl->client.Delete(query.c_str());
-  std::cerr << "[API] ERROR: " << res.error() << " statuscode: " << res->status
-            << std::endl;
+  std::cerr << "[API] ERROR: " << res.error()
+            << " | value returned: " << (res && res->status) << std::endl;
   return res && res->status == 200;
 }
 
