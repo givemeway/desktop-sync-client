@@ -27,7 +27,7 @@ CloudSyncWorker::CloudSyncWorker(DatabaseManager &dbManager,
 
 CloudSyncWorker::~CloudSyncWorker() { stop(); }
 
-void CloudSyncWorker::pollCloudToSyncToLocal() {
+bool CloudSyncWorker::pollCloudToSyncToLocal() {
   auto result = m_apiClient.getMetadata();
   auto dbFiles = m_dbManager.getAllFiles();
   auto dbDirs = m_dbManager.getAllDirectories();
@@ -64,7 +64,9 @@ void CloudSyncWorker::pollCloudToSyncToLocal() {
     processFilesToRename(filesToRename);
     processFilesInConflict(filesInConflict);
     processFilesToUpdate(filesToUpdate);
+    return true;
   } else {
+    return false;
   }
 }
 
@@ -672,8 +674,9 @@ void CloudSyncWorker::start() {
 
 void CloudSyncWorker::run() {
   while (!m_stopThread) {
-    pollCloudToSyncToLocal();
-    processQueueToSyncUp();
+    bool isConnected = pollCloudToSyncToLocal();
+    if (isConnected)
+      processQueueToSyncUp();
     // Poll every 30 seconds, or check stopThread more frequently
     for (int i = 0; i < 30 && !m_stopThread; ++i) {
       std::this_thread::sleep_for(std::chrono::seconds(1));

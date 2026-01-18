@@ -30,7 +30,7 @@ private:
   std::string m_userEmail;
   std::thread m_workerThread;
   std::atomic<bool> m_stopThread;
-  void pollCloudToSyncToLocal();
+  bool pollCloudToSyncToLocal();
   void run();
   void processQueueToSyncUp();
   std::string getCurrentTime();

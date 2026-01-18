@@ -299,10 +299,11 @@ ReconciliationResult ReconciliationService::reconcile(
   }
 
   // 8. Handle Directory Renames (using inodes from local queue)
-  std::vector<RenameInfo> renames = detectDirRenames(*localDirQueue);
+  /*
+   *  std::vector<RenameInfo> renames = detectDirRenames(*localDirQueue);
   std::vector<RenameInfo> collapsed = collapseDirRenames(renames);
   reconcileDirRenamedCandidates(collapsed);
-
+   */
   return result;
 }
 
@@ -396,9 +397,12 @@ void ReconciliationService::reconcileDirRenamedCandidates(
     dq.path = dir.newPath;
     dq.old_path = dir.oldPath;
     dq.sync_status = syncStatusToString(SyncStatus::RENAME);
-    dq.absPath = std::filesystem::path(m_syncPath).append(dir.newPath).string();
+    std::string abspath =
+        dir.newPath == "/" ? m_syncPath : m_syncPath + dir.newPath;
+    dq.absPath = abspath;
 
     m_dbManager.upsertDirectoryQueue(dq);
+    // m_dbManager.deleteDirectoryQueue(dq.device, dq.folder, dq.path);
   }
 }
 
@@ -649,6 +653,11 @@ void ReconciliationService::reconcileLocalState(
       m_dbManager.updateFileQueue(added);
     }
   }
+  std::optional<std::vector<DirectoryQueueEntry>> qDirs =
+      m_dbManager.getAllQueueDirectories();
+  std::vector<RenameInfo> renames = detectDirRenames(*qDirs);
+  std::vector<RenameInfo> collapsed = collapseDirRenames(renames);
+  reconcileDirRenamedCandidates(collapsed);
 }
 
 } // namespace sync_app
