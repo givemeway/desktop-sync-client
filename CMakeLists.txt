@@ -15,6 +15,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_definitions(-D_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
 add_definitions(-DSQLITE_ORM_OMIT_CTE)
 
+if(MINGW OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_compile_options("-Wa,-mbig-obj")
+endif()
+
 # Handle External Dependencies
 # All libraries below are header-only and provided in the 'external' folder
 include_directories(include)
@@ -47,16 +51,20 @@ add_definitions(-DHAVE_LIBMAGIC)
 add_definitions(-DMAGIC_DB_PATH="${unofficial-libmagic_DICTIONARY}")
 message(STATUS "libmagic found - using content-based MIME detection")
 
+#Find  OpenCV from VCPKG 
+find_package(OpenCV REQUIRED)
+message(STATUS "OpenCV ${OpenCV_VERSION} found")
+
 # Link Libraries
 if(WIN32)
     # Required for cpp-httplib on Windows
     if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_link_libraries(sync_client PRIVATE sqlite3 efsw-static ws2_32 crypt32 unofficial::libmagic::libmagic pthread)
+      target_link_libraries(sync_client PRIVATE sqlite3 efsw-static ws2_32 crypt32 unofficial::libmagic::libmagic ${OpenCV_LIBS} pthread)
     else()
-        target_link_libraries(sync_client PRIVATE sqlite3 efsw-static ws2_32 crypt32 unofficial::libmagic::libmagic)
+      target_link_libraries(sync_client PRIVATE sqlite3 efsw-static ws2_32 crypt32 unofficial::libmagic::libmagic ${OpenCV_LIBS})
     endif()
 else()
-    target_link_libraries(sync_client sqlite3 efsw-static pthread unofficial::libmagic::libmagic)
+  target_link_libraries(sync_client sqlite3 efsw-static pthread unofficial::libmagic::libmagic ${OpenCV_LIBS})
 endif()
 
 # Installation rules for packaging
@@ -66,7 +74,12 @@ install(TARGETS sync_client DESTINATION bin)
 if(WIN32)
     # Copy libmagic DLL
     install(FILES $<TARGET_FILE:unofficial::libmagic::libmagic> DESTINATION bin)
-    
+   
+    # Copy OpenCV DLLs 
+    if(OpenCV_RUNTIME_LIBRARIES)
+        install(FILES ${OpenCV_RUNTIME_LIBRARIES} DESTINATION bin)
+    endif()
+
     # Copy magic database files for libmagic
     install(DIRECTORY ${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/libmagic/
             DESTINATION bin/magic

@@ -47,4 +47,5 @@ build
 *.dwo
 
 #vcpkg installation path
+build_gcc_working
 vcpkg_installed

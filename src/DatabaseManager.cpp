@@ -111,6 +111,7 @@ bool DatabaseManager::open() {
 void DatabaseManager::close() {}
 
 void DatabaseManager::initializeSchema() {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   std::cout << "[DB] Synchronizing schema via sqlite_orm..." << std::endl;
   m_impl->storage.sync_schema();
   std::cout << "[DB] Schema synchronized successfully." << std::endl;
@@ -180,7 +181,6 @@ DatabaseManager::getFileByPath(const std::string &path,
   try {
     return m_impl->storage.get<FileMetadata>(path, filename);
   } catch (const std::exception &e) {
-    std::cerr << "[DB] Error Fetching FileByPath :" << e.what() << "\n";
     return std::nullopt;
   }
 }
@@ -202,6 +202,29 @@ DatabaseManager::getFileQueueByPath(const std::string &path,
   }
 }
 
+bool DatabaseManager::deleteAllFilesInQueue() {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  try {
+    m_impl->storage.remove_all<FileQueueEntry>();
+    return true;
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error Emptying File Queue <<" << e.what() << std::endl;
+    return false;
+  }
+}
+
+bool DatabaseManager::deleteAllDirsInQueue() {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  try {
+    m_impl->storage.remove_all<DirectoryQueueEntry>();
+    return true;
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error Emptying Directory Queue <<" << e.what()
+              << std::endl;
+    return false;
+  }
+}
+
 bool DatabaseManager::insertFile(const FileMetadata &file,
                                  const FileQueueEntry &fileQueue) {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
@@ -216,6 +239,8 @@ bool DatabaseManager::insertFile(const FileMetadata &file,
         dq.old_path = fileQueue.old_path;
         dq.sync_status = syncStatusToString(SyncStatus::FILE_LINKED);
       } catch (const std::exception &e) {
+        std::cerr << "[DB] " << e.what() << " device: " << p.device
+                  << " path: " << file.path << std::endl;
         return false;
       }
       m_impl->storage.replace<DirectoryQueueEntry>(dq);
@@ -273,7 +298,19 @@ bool DatabaseManager::deleteFile(const std::string &path,
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&] {
+      pathParts p = getFolderDevice(std::filesystem::path(path));
+      DirectoryQueueEntry dq;
+      try {
+        auto dir =
+            m_impl->storage.get<DirectoryMetadata>(p.device, p.folder, path);
+        dq = DirectoryQueueEntry(dir);
+        dq.old_path = fq.old_path;
+        dq.sync_status = syncStatusToString(SyncStatus::FILE_LINKED);
+      } catch (const std::exception &e) {
+        return false;
+      }
       m_impl->storage.remove<FileMetadata>(path, filename);
+      m_impl->storage.replace<DirectoryQueueEntry>(dq);
       m_impl->storage.replace<FileQueueEntry>(fq);
       return true;
     });
@@ -391,6 +428,46 @@ DatabaseManager::getAllFilesInDirectory(const std::string &path) {
   }
 }
 
+std::optional<std::vector<FileQueueEntry>>
+DatabaseManager::getFileQueueByInode(const std::string &inode) {
+  try {
+    return m_impl->storage.get_all<FileQueueEntry>(
+        where(c(&FileQueueEntry::inode) == inode));
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Unable to find the file by Inode ->" << e.what()
+              << std::endl;
+    return std::nullopt;
+  }
+}
+
+std::optional<
+    std::tuple<std::vector<FileQueueEntry>, std::vector<DirectoryQueueEntry>>>
+
+DatabaseManager::getDirQueueByInode(const std::string &inode) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  try {
+    auto dirQ = m_impl->storage.get_all<DirectoryQueueEntry>(
+        where(c(&DirectoryQueueEntry::inode) == inode));
+    if (!dirQ.empty() && dirQ.size() == 1) {
+      auto d = dirQ[0];
+      std::vector<DirectoryQueueEntry> dirsQ =
+          m_impl->storage.get_all<DirectoryQueueEntry>(
+              where(c(&DirectoryQueueEntry::path) == d.path ||
+                    like(&DirectoryQueueEntry::path, d.path + "/%")));
+      std::vector<FileQueueEntry> filesQ =
+          m_impl->storage.get_all<FileQueueEntry>(
+              where(c(&FileQueueEntry::path) == d.path ||
+                    like(&FileQueueEntry::path, d.path + "/%")));
+      return std::make_tuple(filesQ, dirsQ);
+    } else {
+      return std::nullopt;
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error fetching By Inode ->" << e.what() << std::endl;
+    return std::nullopt;
+  }
+}
+
 bool DatabaseManager::insertDirectory(const DirectoryMetadata &dir,
                                       const DirectoryQueueEntry &dirQueue) {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
@@ -425,6 +502,31 @@ bool DatabaseManager::insertFileWithDirectory(
     return false;
   }
 }
+
+bool DatabaseManager::updateMovedFile(const FileQueueEntry &fq,
+                                      const FileMetadata &f) {
+
+  try {
+
+    return m_impl->storage.transaction([&]() {
+      try {
+        m_impl->storage.remove<FileQueueEntry>(
+            where(c(&FileQueueEntry::path) == fq.old_path &&
+                  c(&FileQueueEntry::filename) == fq.old_filename));
+      } catch (...) {
+        return false;
+      }
+      m_impl->storage.replace<FileQueueEntry>(fq);
+      m_impl->storage.replace<FileMetadata>(f);
+
+      return true;
+    });
+
+  } catch (const std::exception &e) {
+
+    return false;
+  }
+};
 
 bool DatabaseManager::insertFileAndQueueWithDirectory(
     FileMetadata &cloudFile, FileMetadata &conflictedFile,
@@ -505,18 +607,14 @@ bool DatabaseManager::deleteFolderWithTransaction(
       m_impl->storage.remove_all<DirectoryMetadata>(
           where(c(&DirectoryMetadata::path) == path ||
                 like(&DirectoryMetadata::path, path + "/%")));
-      std::vector<DirectoryQueueEntry> queueDirs =
-          m_impl->storage.get_all<DirectoryQueueEntry>(
-              where(c(&DirectoryQueueEntry::path) == path ||
-                    like(&DirectoryQueueEntry::path, path + "/%")));
-      if (queueDirs.size() > 0) {
-        m_impl->storage.remove_all<FileQueueEntry>(
-            where(c(&FileQueueEntry::path) == path ||
-                  like(&FileQueueEntry::path, path + "/%")));
-        m_impl->storage.remove_all<DirectoryQueueEntry>(
-            where(c(&DirectoryQueueEntry::path) == path ||
-                  like(&DirectoryQueueEntry::path, path + "/%")));
-      }
+
+      m_impl->storage.remove_all<FileQueueEntry>(
+          where(c(&FileQueueEntry::path) == path ||
+                like(&FileQueueEntry::path, path + "/%")));
+      m_impl->storage.remove_all<DirectoryQueueEntry>(
+          where(c(&DirectoryQueueEntry::path) == path ||
+                like(&DirectoryQueueEntry::path, path + "/%")));
+
       m_impl->storage.replace<DirectoryQueueEntry>(dq);
       return true; // Commit
     });
@@ -730,6 +828,47 @@ bool DatabaseManager::deleteFileQueue(const std::string &path,
   }
 }
 
+bool DatabaseManager::deleteOrphanItemsInQueue(const std::string &path,
+                                               const std::string &oldPath) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  try {
+    return m_impl->storage.transaction([&]() {
+      std::vector<FileQueueEntry> filesInQ{};
+      try {
+        filesInQ = m_impl->storage.get_all<FileQueueEntry>(
+            where(c(&FileQueueEntry::sync_status) ==
+                      syncStatusToString(SyncStatus::RENAME) ||
+                  c(&FileQueueEntry::sync_status) ==
+                      syncStatusToString(SyncStatus::MODIFIED)));
+      } catch (...) {
+      }
+      m_impl->storage.remove_all<FileQueueEntry>(
+          where(c(&FileQueueEntry::path) == oldPath ||
+                like(&FileQueueEntry::path, oldPath + "/%")));
+      m_impl->storage.remove_all<DirectoryQueueEntry>(
+          where(c(&DirectoryQueueEntry::path) == oldPath ||
+                like(&DirectoryQueueEntry::path, oldPath + "/%")));
+      m_impl->storage.remove_all<FileQueueEntry>(
+          where(c(&FileQueueEntry::path) == path ||
+                like(&FileQueueEntry::path, path + "/%")));
+      m_impl->storage.remove_all<DirectoryQueueEntry>(
+          where(c(&DirectoryQueueEntry::path) == path ||
+                like(&DirectoryQueueEntry::path, path + "/%")));
+      if (!filesInQ.empty()) {
+        for (auto &file : filesInQ) {
+          m_impl->storage.insert<FileQueueEntry>(file);
+        }
+      }
+      return true;
+    });
+
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error deleting ->" << path << " from File & Dir Queue =>"
+              << e.what() << std::endl;
+    return false;
+  }
+}
+
 // Directory Queue operations
 std::optional<std::vector<DirectoryQueueEntry>>
 DatabaseManager::getDirectoryQueue() {
@@ -800,13 +939,69 @@ bool DatabaseManager::updateDirectoryQueue(const DirectoryQueueEntry &entry) {
   }
 }
 
+bool DatabaseManager::insertFilesAndDirectories(
+    const std::vector<FileMetadata> &files,
+    const std::vector<DirectoryMetadata> &dirs, const std::string &path,
+    const std::string &oldPath) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  try {
+    return m_impl->storage.transaction([&]() {
+      for (auto &dir : dirs) {
+        m_impl->storage.replace<DirectoryMetadata>(dir);
+      }
+      for (auto &file : files) {
+        m_impl->storage.replace<FileMetadata>(file);
+      }
+      m_impl->storage.remove_all<FileQueueEntry>(
+          where(c(&FileQueueEntry::path) == oldPath ||
+                like(&FileQueueEntry::path, oldPath + "/%")));
+      m_impl->storage.remove_all<DirectoryQueueEntry>(
+          where(c(&DirectoryQueueEntry::path) == oldPath ||
+                like(&DirectoryQueueEntry::path, oldPath + "/%")));
+      auto p = getFolderDevice(std::filesystem::path(path));
+      DirectoryQueueEntry dq;
+      try {
+        auto d = m_impl->storage.get<DirectoryMetadata>(
+            where(c(&DirectoryMetadata::device) == p.device &&
+                  c(&DirectoryMetadata::folder) == p.folder &&
+                  c(&DirectoryMetadata::path) == path));
+        dq = DirectoryMetadata(d);
+
+      } catch (...) {
+        return false;
+      }
+      dq.sync_status = syncStatusToString(SyncStatus::MOVED);
+      dq.old_path = oldPath;
+      m_impl->storage.replace(dq);
+      return true;
+    });
+
+  } catch (const std::exception &e) {
+    return false;
+  }
+}
+
 bool DatabaseManager::deleteDirectoryQueue(const std::string &device,
                                            const std::string &folder,
                                            const std::string &path) {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
-    m_impl->storage.remove<DirectoryQueueEntry>(device, folder, path);
-    return true;
+    return m_impl->storage.transaction([&]() {
+      auto qFiles = m_impl->storage.get_all<FileQueueEntry>(
+          where(c(&FileQueueEntry::path) == path ||
+                like(&FileQueueEntry::path, path + "/%")));
+      if (qFiles.size() == 0) {
+        m_impl->storage.remove<DirectoryQueueEntry>(device, folder, path);
+      } else {
+        m_impl->storage.update_all(
+            set(c(&DirectoryQueueEntry::sync_status) =
+                    syncStatusToString(SyncStatus::FILE_LINKED)),
+            where(c(&DirectoryQueueEntry::path) == path &&
+                  c(&DirectoryQueueEntry::device) == device &&
+                  c(&DirectoryQueueEntry::folder) == folder));
+      }
+      return true;
+    });
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error deleting ->" << path
               << " from DirectoryQueue Table =>" << e.what() << std::endl;

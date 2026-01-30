@@ -2,12 +2,18 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <iostream>
+#include <opencv2/opencv.hpp>
 #include <string>
 #include <unordered_map>
-
 #ifdef HAVE_LIBMAGIC
 #include <magic.h>
 #endif
+
+struct ImageDimensions {
+  int height;
+  int width;
+};
 
 class MimeTypeDetector {
 private:
@@ -133,11 +139,40 @@ public:
     return getMimeByExtension(filepath);
   }
 
+  std::optional<magic_t> getMagicCookie() {
+#ifdef HAVE_LIBMAGIC
+    if (libmagic_available) {
+      return magic_cookie;
+    }
+    return std::nullopt;
+#endif
+  }
+
   bool isUsingLibmagic() const {
 #ifdef HAVE_LIBMAGIC
     return libmagic_available;
 #else
     return false;
 #endif
+  }
+
+  std::optional<ImageDimensions> getImageDims(const std::string &filepath,
+                                              magic_t magicCookie) {
+    const char *mimeType = magic_file(magicCookie, filepath.c_str());
+    if (!mimeType || std::string(mimeType).find("image/") != 0) {
+      return std::nullopt;
+    }
+    std::cout << "[MIME] Image Detected:" << mimeType << std::endl;
+    cv::Mat image = cv::imread(filepath);
+    if (image.empty()) {
+      std::cerr << "[MIME] Failed to Load Image: " << filepath << std::endl;
+      return std::nullopt;
+    }
+    ImageDimensions dims;
+    dims.width = image.cols;
+    dims.height = image.rows;
+    std::cout << "[IMAGE] " << filepath << " : " << dims.width << "x"
+              << dims.height << std::endl;
+    return dims;
   }
 };

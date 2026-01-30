@@ -1,6 +1,6 @@
 #pragma once
 #include "DatabaseManager.hpp"
-#include "FileSystemScanner.hpp"
+#include "ThreadPool.hpp"
 #include "types.hpp"
 #include <map>
 #include <optional>
@@ -9,6 +9,8 @@
 
 namespace sync_app {
 
+class FileSystemScanner;
+class ThreadPool;
 struct RenameInfo {
   std::string inode;
   std::string uuid;
@@ -24,8 +26,8 @@ struct RenameInfo {
 
 class ReconciliationService {
 public:
-  ReconciliationService(DatabaseManager &dbManager,
-                        const std::string &syncPath);
+  ReconciliationService(DatabaseManager &dbManager, FileSystemScanner &scanner,
+                        ThreadPool &threadpool, const std::string &syncPath);
 
   ReconciliationResult
   reconcile(const std::vector<CloudFileMetadata> &cloudFiles,
@@ -39,7 +41,8 @@ public:
 private:
   DatabaseManager &m_dbManager;
   std::string m_syncPath;
-  FileSystemScanner m_scanner;
+  FileSystemScanner &m_scanner;
+  ThreadPool &m_threadPool;
 
   // Helper methods
   std::vector<std::string> splitDbPath(const std::string &p);

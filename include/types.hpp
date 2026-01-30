@@ -8,7 +8,16 @@
 
 namespace sync_app {
 
-enum class SyncStatus { NEW, RENAME, MODIFIED, DELETE, FILE_LINKED, UNKNOWN };
+enum class SyncStatus {
+  NEW,
+  RENAME,
+  MODIFIED,
+  DELETE,
+  FILE_LINKED,
+  UNKNOWN,
+  MOVED,
+  MOVE_CANDIDATE
+};
 
 struct ScannedFile {
   std::string path; // Relative path from sync root (e.g. "/foo/bar.txt")
@@ -31,6 +40,7 @@ struct ScannedDirectory {
 struct ScanResult {
   std::vector<ScannedFile> files;
   std::vector<ScannedDirectory> directories;
+  std::unordered_map<std::string, std::string> inodesCache;
 };
 
 struct FileMetadata {
@@ -90,13 +100,14 @@ struct DirectoryQueueEntry : public DirectoryMetadata {
   std::string path;
   std::string folder;
   std::string device;
+  std::string inode;
   // Default constructor
   DirectoryQueueEntry() = default;
 
   // Constructor from DirectoryMetadata (ensure shadowed fields are copied)
   DirectoryQueueEntry(const DirectoryMetadata &d)
       : DirectoryMetadata(d), uuid(d.uuid), path(d.path), device(d.device),
-        folder(d.folder) {}
+        folder(d.folder), inode(d.inode) {}
 };
 
 struct CloudFileMetadata {
@@ -158,6 +169,7 @@ struct ReconciliationResult {
   std::vector<CloudFileMetadata> filesInConflict;
   std::vector<CloudFileMetadata> filesToUpdate;
   std::vector<LocalFileRenameMetadata> filesToRename;
+  std::vector<LocalFileRenameMetadata> filesToMove;
 };
 
 struct FileUploadMetadata {
@@ -208,6 +220,10 @@ inline std::string syncStatusToString(SyncStatus status) {
     return "FILE_LINKED";
   case SyncStatus::RENAME:
     return "rename";
+  case SyncStatus::MOVED:
+    return "moved";
+  case SyncStatus::MOVE_CANDIDATE:
+    return "move_candidate";
   default:
     return "unknown";
   }
@@ -224,6 +240,10 @@ inline SyncStatus stringToSyncStatus(const std::string &syncStatus) {
     return SyncStatus::RENAME;
   if (syncStatus == "FILE_LINKED")
     return SyncStatus::FILE_LINKED;
+  if (syncStatus == "moved")
+    return SyncStatus::MOVED;
+  if (syncStatus == "move_candidate")
+    return SyncStatus::MOVE_CANDIDATE;
   return SyncStatus::UNKNOWN;
 }
 } // namespace sync_app

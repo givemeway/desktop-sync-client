@@ -1,5 +1,6 @@
 #include "types.hpp"
 #include <atomic>
+#include <condition_variable>
 #include <string>
 #include <thread>
 namespace sync_app {
@@ -9,12 +10,14 @@ class ApiClient;
 class FileSystemScanner;
 class SyncWorker;
 class ReconciliationService;
+class ThreadPool;
 
 class CloudSyncWorker {
 public:
   CloudSyncWorker(DatabaseManager &dbManager, ApiClient &apiClient,
                   ReconciliationService &reconcile, FileSystemScanner &scanner,
-                  SyncWorker &syncWorker, const std::string &syncPath,
+                  SyncWorker &syncWorker, ThreadPool &uploadThreadPool,
+                  ThreadPool &downloadThreadPool, const std::string &syncPath,
                   const std::string &userEmail);
   ~CloudSyncWorker();
   void start();
@@ -26,13 +29,25 @@ private:
   ReconciliationService &m_reconcile;
   FileSystemScanner &m_scanner;
   SyncWorker &m_syncWorker;
+  ThreadPool &m_uploadThreadPool;
+  ThreadPool &m_downloadThreadPool;
+
   std::string m_syncPath;
   std::string m_userEmail;
   std::thread m_workerThread;
+  std::thread m_uploadThread;
+  std::thread m_downloadThread;
   std::atomic<bool> m_stopThread;
+  std::mutex m_syncMutex;
+  std::mutex m_syncDownMutex;
+  std::mutex m_syncUpMutex;
+  std::condition_variable m_syncCV;
+
   bool pollCloudToSyncToLocal();
-  void run();
+  void runSyncDown();
+  void runSyncUp();
   void processQueueToSyncUp();
+
   std::string getCurrentTime();
   bool createLocalDirectory(const std::string &path);
   DirectoryMetadata getDirectoryMetadata(const std::string &path,

@@ -5,6 +5,7 @@
 #include "FilesystemWatcher.hpp"
 #include "ReconciliationService.hpp"
 #include "SyncWorker.hpp"
+#include "ThreadPool.hpp"
 #include <atomic>
 #include <condition_variable>
 #include <csignal>
@@ -18,7 +19,7 @@ std::mutex cv_m;
 std::condition_variable cv;
 const std::string dbPath = "sync_client.db";
 #ifdef _WIN32
-const std::string syncFolder = "C:/Users/sandk/Desktop/sync_folder";
+const std::string syncFolder = "C:/Users/Sandeep Kumar/Desktop/sync_folder";
 #else
 const std::string syncFolder = "/users/sandeep/Desktop/sync-folder";
 #endif
@@ -54,15 +55,21 @@ int main() {
       std::cerr << "[Main] Failed to open database." << std::endl;
       return 1;
     }
+
     dbManager.initializeSchema();
+
+    sync_app::ThreadPool hashPool(4);
+    sync_app::ThreadPool uploadPool(4);
+    sync_app::ThreadPool downloadPool(4);
     sync_app::ApiClient apiClient(apiBaseUrl, userEmail);
-    sync_app::ReconciliationService reconciliationService(dbManager,
-                                                          syncFolder);
-    sync_app::FileSystemScanner scanner(syncFolder);
-    sync_app::SyncWorker syncworker(dbManager, scanner, syncFolder);
-    sync_app::CloudSyncWorker cloudSync(dbManager, apiClient,
-                                        reconciliationService, scanner,
-                                        syncworker, syncFolder, userEmail);
+    sync_app::FileSystemScanner scanner(hashPool, syncFolder);
+    sync_app::ReconciliationService reconciliationService(dbManager, scanner,
+                                                          hashPool, syncFolder);
+    sync_app::SyncWorker syncworker(dbManager, scanner, hashPool, syncFolder);
+    sync_app::CloudSyncWorker cloudSync(
+        dbManager, apiClient, reconciliationService, scanner, syncworker,
+        uploadPool, downloadPool, syncFolder, userEmail);
+
     std::cout << "[Main] Database initialized." << std::endl;
     std::cout << "[Main] API Client initialized." << std::endl;
 
@@ -80,7 +87,7 @@ int main() {
 
     // 4. Initialize Watcher
     sync_app::FilesystemWatcher watcher(
-        syncFolder,
+        syncFolder, scanResult.inodesCache,
         [&syncworker](const std::string &path, const std::string &oldPath,
                       sync_app::WatchEvent event) {
           syncworker.enqueueEvent(event, path, oldPath);

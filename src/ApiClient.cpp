@@ -7,7 +7,6 @@
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <tuple>
-
 using json = nlohmann::json;
 
 namespace sync_app {
@@ -48,24 +47,29 @@ ApiClient::ApiClient(const std::string &baseUrl, const std::string &userEmail)
     : m_baseUrl(baseUrl), m_userEmail(userEmail),
       m_impl(std::make_unique<Impl>(baseUrl)) {}
 
+std::unique_ptr<ApiClient> ApiClient::clone() const {
+  return std::make_unique<ApiClient>(m_baseUrl, m_userEmail);
+}
+
 ApiClient::~ApiClient() = default;
 
 std::vector<std::string> ApiClient::getPathComponents(const std::string &path) {
   if (path == "/" || path.empty()) {
     return {"/"};
   }
-  
+
   std::vector<std::string> pathTree;
   std::string currentPath = "";
   std::stringstream ss(path);
   std::string token;
-  
+
   while (std::getline(ss, token, '/')) {
-    if (token.empty()) continue;
+    if (token.empty())
+      continue;
     currentPath += "/" + token;
     pathTree.push_back(currentPath);
   }
-  
+
   if (pathTree.empty()) {
     return {"/"};
   }
@@ -124,10 +128,10 @@ std::optional<CloudMetadataResult> ApiClient::getMetadata() {
   std::string path =
       "/app/sync/getSyncItems?username=" + urlEncode(m_userEmail);
   auto res = m_impl->client.Get(path.c_str());
-  std::cout << "[API] url ->" << path << std::endl;
+  std::cout << "[API] url ->" << path << "\n";
   if (res && res->status == 200) {
     auto data = json::parse(res->body);
-    std::cout << "[API] Get request Successful!! Parsing Body..." << std::endl;
+    std::cout << "[API] Get request Successful!! Parsing Body..." << "\n";
     CloudMetadataResult result;
     if (data.is_object() && data.contains("items") &&
         data["items"].is_array()) {
@@ -146,19 +150,19 @@ std::optional<CloudMetadataResult> ApiClient::getMetadata() {
       result.directories = cloudDirs;
       return result;
     } else {
-      std::cout << "[API] Parsing Error -> Assertion Failed" << std::endl;
+      std::cout << "[API] Parsing Error -> Assertion Failed" << "\n";
       return std::nullopt;
     }
 
   } else {
-    std::cerr << "[API] Request failed -> " << res.error() << std::endl;
+    std::cerr << "[API] Request failed -> " << res.error() << "\n";
     return std::nullopt;
   }
 }
 
 bool ApiClient::downloadFile(const CloudFileMetadata &file,
                              const std::string &localAbsPath) {
-  std::cout << "[API] Starting download for: " << file.filename << " -> " << localAbsPath << std::endl;
+  std::cout << "[API] Starting download for: " << file.filename << " -> \n";
   auto parts = parsePath(file.path);
   std::string mtime;
 
@@ -175,22 +179,21 @@ bool ApiClient::downloadFile(const CloudFileMetadata &file,
 
   if (!ofs) {
     std::cerr << "[API] exception " << ofs.exceptions()
-              << " opening the file -> " << localAbsPath << std::endl;
+              << " opening the file -> " << localAbsPath << "\n";
     return false;
   }
 
-  std::cout << "[API] Sending request to: " << query << std::endl;
   auto res = m_impl->client.Get(
       query.c_str(),
       [&mtime](const httplib::Response &response) {
         if (response.status != 200) {
           std::cerr << "[API] Response failed. Status Code: " << response.status
-                    << std::endl;
+                    << "\n";
           return false;
         }
         mtime = response.get_header_value("mtime");
         if (mtime.empty()) {
-          std::cerr << "[API] Missing mtime header" << std::endl;
+          std::cerr << "[API] Missing mtime header" << "\n";
           return false;
         }
         return true;
@@ -202,9 +205,9 @@ bool ApiClient::downloadFile(const CloudFileMetadata &file,
   ofs.close();
   bool success = res && res->status == 200;
   if (success) {
-    std::cout << "[API] Download successful for: " << file.filename << std::endl;
+    std::cout << "[API] Download successful for: " << file.filename << "\n";
   } else {
-    std::cerr << "[API] Download failed for: " << file.filename << " (res=" << (res ? "exists" : "null") << ")" << std::endl;
+    std::cerr << "[API] Download failed for: " << file.filename << "\n";
   }
   return success;
 }
@@ -215,13 +218,13 @@ bool ApiClient::uploadFile(const FileQueueEntry &file,
   try {
     std::ifstream ifs(file.absPath, std::ios::binary | std::ios::ate);
     if (!ifs) {
-      std::cerr << "[API] Exception Opening a file: " << file.absPath << std::endl;
+      std::cerr << "[API] Exception Opening a file: " << file.absPath << "\n";
       return false;
     }
     std::streamsize fileSize = ifs.tellg();
     ifs.seekg(0, std::ios::beg);
 
-    // Limit memory usage for very large files if needed, 
+    // Limit memory usage for very large files if needed,
     // but for now let's at least avoid unnecessary reallocations
     std::string content;
     content.reserve(fileSize);
@@ -246,15 +249,21 @@ bool ApiClient::uploadFile(const FileQueueEntry &file,
     // Detect MIME type on-the-fly using libmagic
     MimeTypeDetector detector;
     std::string detectedMime = detector.getMimeType(file.absPath);
-
+    magic_t magicCookie = *detector.getMagicCookie();
     if (!detectedMime.empty()) {
       filestat["type"] = detectedMime;
+      if (detectedMime.starts_with("image/")) {
+        auto maybeDims = detector.getImageDims(file.absPath, magicCookie);
+        if (maybeDims.has_value()) {
+          filestat["height"] = maybeDims->height;
+          filestat["width"] = maybeDims->width;
+        } else {
+          filestat["type"] = "file";
+        }
+      }
     } else {
-      filestat["type"] =
-          file.filename.substr(file.filename.find_last_of(".") + 1);
+      filestat["type"] = "file";
     }
-    std::cout << "[API] TYPE------->" << filestat["type"]
-              << "  filename : " << filestat["filename"] << std::endl;
     httplib::UploadFormDataItems items = {
         {"file", content, file.filename, "application/octet-stream"}};
 
@@ -264,7 +273,7 @@ bool ApiClient::uploadFile(const FileQueueEntry &file,
 
     return res && res->status == 200;
   } catch (const std::exception &e) {
-    std::cerr << "[API] " << e.what() << std::endl;
+    std::cerr << "[API] " << e.what() << "\n";
     return false;
   }
 }
@@ -312,7 +321,7 @@ bool ApiClient::renameFile(const FileQueueEntry &file) {
   return res && res->status == 200;
 }
 
-bool ApiClient::createFolder(const DirectoryMetadata &dir) {
+bool ApiClient::createFolder(const DirectoryQueueEntry &dir) {
   std::string query = "/app/sync/createFolder?path=" + urlEncode(dir.path) +
                       "&device=" + urlEncode(dir.device) +
                       "&username=" + urlEncode(m_userEmail) +
@@ -322,11 +331,11 @@ bool ApiClient::createFolder(const DirectoryMetadata &dir) {
 
   auto res = m_impl->client.Post(query.c_str());
   std::cerr << "[API] ERROR: " << res.error()
-            << " | value returned: " << (res && res->status) << std::endl;
+            << " | value returned: " << (res && res->status) << "\n";
   return res && res->status == 200;
 }
 
-bool ApiClient::deleteFolder(const DirectoryMetadata &dir) {
+bool ApiClient::deleteFolder(const DirectoryQueueEntry &dir) {
   auto parts = parsePath(dir.path);
   std::string query = "/app/sync/deleteFolder?path=" + urlEncode(dir.path) +
                       "&folder=" + urlEncode(dir.folder) +
@@ -334,8 +343,6 @@ bool ApiClient::deleteFolder(const DirectoryMetadata &dir) {
                       "&username=" + urlEncode(m_userEmail) +
                       "&device=" + urlEncode(dir.device);
   auto res = m_impl->client.Delete(query.c_str());
-  std::cerr << "[API] ERROR: " << res.error()
-            << " | value returned: " << (res && res->status) << std::endl;
   return res && res->status == 200;
 }
 

@@ -1,8 +1,10 @@
 #include "FileSystemScanner.hpp"
+#include "ThreadPool.hpp"
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <unordered_map>
 #include <vector>
 
 // Include picosha2 for hashing
@@ -18,8 +20,14 @@ namespace fs = std::filesystem;
 
 namespace sync_app {
 
-FileSystemScanner::FileSystemScanner(std::string syncPath)
-    : m_syncPath(syncPath) {}
+struct FileTask {
+  ScannedFile file;
+  std::future<std::string> hashFuture;
+};
+
+FileSystemScanner::FileSystemScanner(ThreadPool &threadPool,
+                                     std::string syncPath)
+    : m_syncPath(syncPath), m_threadPool(threadPool) {}
 
 FileSystemScanner::~FileSystemScanner() = default;
 
@@ -106,6 +114,9 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
     if (!fs::exists(path))
       return result;
 
+    std::vector<FileTask> fileTasks;
+    std::unordered_map<std::string, std::string> inodesCache;
+
     for (const auto &entry : fs::recursive_directory_iterator(path, opts)) {
       try {
         if (entry.is_regular_file()) {
@@ -116,15 +127,22 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
           file.size = entry.file_size();
           file.mtime = getUnixTimeStamp(fs::last_write_time(file.absPath));
           file.inode = getInode(file.absPath);
-          file.hash = calculateHash(file.absPath);
-          result.files.push_back(file);
-
+          inodesCache[file.absPath] = file.inode;
+          std::string filePath{file.absPath};
+          auto func = [this, filePath]() {
+            return this->calculateHash(filePath);
+          };
+          auto future = m_threadPool.enqueue(func);
+          // file.hash = calculateHash(file.absPath);
+          //          result.files.push_back(file);
+          fileTasks.push_back({file, std::move(future)});
         } else if (entry.is_directory()) {
           ScannedDirectory dir;
           dir.absPath = entry.path().string();
           dir.path = toRelativePath(dir.absPath);
           dir.name = entry.path().filename().string();
           dir.inode = getInode(dir.absPath);
+          inodesCache[dir.absPath] = dir.inode;
           dir.mtime = getUnixTimeStamp(fs::last_write_time(dir.absPath));
           result.directories.push_back(dir);
         }
@@ -133,10 +151,15 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
                   << e.what() << std::endl;
       }
     }
+    result.files.reserve(fileTasks.size());
+    for (auto &task : fileTasks) {
+      task.file.hash = task.hashFuture.get();
+      result.files.push_back(task.file);
+    }
+    result.inodesCache = std::move(inodesCache);
   } catch (const std::exception &e) {
     std::cerr << "FileSystem Error: " << e.what() << std::endl;
   }
-
   return result;
 }
 

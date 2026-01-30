@@ -21,6 +21,7 @@ public:
   std::optional<CloudMetadataResult> getMetadata();
 
   // File operations
+  std::unique_ptr<ApiClient> clone() const;
   bool downloadFile(const CloudFileMetadata &file,
                     const std::string &localAbsPath);
   bool uploadFile(const FileQueueEntry &file,
@@ -31,8 +32,8 @@ public:
   bool renameFile(const FileQueueEntry &file);
 
   // Directory operations
-  bool createFolder(const DirectoryMetadata &dir);
-  bool deleteFolder(const DirectoryMetadata &dir);
+  bool createFolder(const DirectoryQueueEntry &dir);
+  bool deleteFolder(const DirectoryQueueEntry &dir);
   bool renameFolder(const DirectoryQueueEntry &dir);
 
 private:

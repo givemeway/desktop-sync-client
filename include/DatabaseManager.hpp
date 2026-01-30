@@ -37,6 +37,10 @@ public:
   std::optional<std::vector<FileMetadata>>
   getAllFilesInDirectory(const std::string &path);
 
+  bool deleteAllFilesInQueue();
+
+  bool deleteAllDirsInQueue();
+
   bool insertFile(const FileMetadata &file, const FileQueueEntry &fileQueue);
 
   bool updateFile(const FileMetadata &file);
@@ -72,6 +76,9 @@ public:
                                   FileQueueEntry &conflictedFileQueue,
                                   DirectoryQueueEntry &conflictedDirQueue,
                                   const std::vector<DirectoryMetadata> &dirs);
+  std::optional<
+      std::tuple<std::vector<FileQueueEntry>, std::vector<DirectoryQueueEntry>>>
+  getDirQueueByInode(const std::string &inode);
 
   bool moveDirectory(const std::string &path, const std::string &oldPath,
                      const DirectoryQueueEntry &dq);
@@ -111,13 +118,26 @@ public:
 
   bool deleteDirectoryQueue(const std::string &device,
                             const std::string &folder, const std::string &path);
+
   bool upsertDirectoryQueue(const DirectoryQueueEntry &entry);
 
   bool moveDirectoryQueue(const std::string &path, const std::string &oldPath);
 
+  bool deleteOrphanItemsInQueue(const std::string &path,
+                                const std::string &oldPath);
+
   pathParts getFolderDevice(const std::filesystem::path &path);
 
   std::recursive_mutex &getSyncMutex();
+
+  bool insertFilesAndDirectories(const std::vector<FileMetadata> &files,
+                                 const std::vector<DirectoryMetadata> &dirs,
+                                 const std::string &path,
+                                 const std::string &oldPath);
+  std::optional<std::vector<FileQueueEntry>>
+  getFileQueueByInode(const std::string &inode);
+
+  bool updateMovedFile(const FileQueueEntry &fq, const FileMetadata &f);
 
 private:
   std::string m_dbPath;

@@ -4,6 +4,13 @@
   "version": "1.0.0",
   "description": "Cross-platform desktop sync client",
   "dependencies": [
-    "libmagic"
+    "libmagic",
+    "opencv4",
+    "sqlite3",
+    "sqlite-orm",
+    "efsw",
+    "nlohmann-json",
+    "cpp-httplib",
+    "picosha2"
   ]
 }

@@ -1,5 +1,7 @@
 #include "ReconciliationService.hpp"
+#include "FileSystemScanner.hpp"
 #include "UuidUtils.hpp"
+#include "types.hpp"
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
@@ -8,8 +10,11 @@
 namespace sync_app {
 
 ReconciliationService::ReconciliationService(DatabaseManager &dbManager,
+                                             FileSystemScanner &scanner,
+                                             ThreadPool &threadpool,
                                              const std::string &syncPath)
-    : m_dbManager(dbManager), m_syncPath(syncPath), m_scanner(syncPath) {}
+    : m_dbManager(dbManager), m_syncPath(syncPath), m_scanner(scanner),
+      m_threadPool(threadpool) {}
 
 std::vector<std::string>
 ReconciliationService::splitDbPath(const std::string &p) {
@@ -22,7 +27,6 @@ ReconciliationService::splitDbPath(const std::string &p) {
   }
   return segments;
 }
-
 std::string ReconciliationService::getUniqueKey(const std::string &dir,
                                                 const std::string &filename) {
   std::string normalizedDir = dir;
@@ -77,7 +81,6 @@ ReconciliationService::findRenameDepthFromPath(const std::string &oldPath,
     diff.oldSegment = oldSegs[idx];
   if (idx < newSegs.size())
     diff.newSegment = newSegs[idx];
-
   return diff;
 }
 
@@ -111,7 +114,7 @@ ReconciliationResult ReconciliationService::reconcile(
     dbPathMap[getUniqueKey(f.path, f.filename)] = f;
   }
 
-  // 3. Load Local Queue (Mocking prisma retrieval via dbManager)
+  // 3. Load Local Queue
   auto localFileQueue = m_dbManager.getFileQueue();
   auto localDirQueue = m_dbManager.getDirectoryQueue();
 
@@ -133,33 +136,44 @@ ReconciliationResult ReconciliationService::reconcile(
     auto itOrigin = dbByOrigin.find(cloudFile.origin);
     auto itPath = dbPathMap.find(pathKey);
 
+    bool isLocalModified = false;
+    bool isLocalRenamed = false;
+    bool isLocalFileMoved = false;
+
+    bool isCloudRenamed = false;
+    bool isCloudModified = false;
+    bool isCloudFileNew = false;
+    bool isCloudFileMoved = false;
+
     FileMetadata *localFileByOrigin =
         (itOrigin != dbByOrigin.end()) ? &itOrigin->second : nullptr;
+
     FileMetadata *localFileByPath =
         (itPath != dbPathMap.end()) ? &itPath->second : nullptr;
 
     auto localInQueue = localInQueueByAnyPath(
         cloudFile, localQueueByOrigin, localQueueByUuid, localQueueByPath);
 
-    bool isLocalModified = false;
     auto itLocalQ = localQueueByPath.find(pathKey);
     if (itLocalQ != localQueueByPath.end()) {
       isLocalModified = (itLocalQ->second.sync_status ==
                          syncStatusToString(SyncStatus::MODIFIED));
     }
 
-    bool isLocalRenamed = false;
     auto itLocalOR = localQueueByOrigin.find(cloudFile.origin);
     if (itLocalOR != localQueueByOrigin.end()) {
       isLocalRenamed = (itLocalOR->second.sync_status ==
                         syncStatusToString(SyncStatus::RENAME));
+      isLocalModified = (itLocalOR->second.sync_status ==
+                         syncStatusToString(SyncStatus::MODIFIED));
+      isLocalFileMoved = (itLocalOR->second.sync_status ==
+                          syncStatusToString(SyncStatus::DELETE));
     }
 
-    bool isCloudModified =
+    isCloudModified =
         localFileByPath
             ? (cloudFile.hashvalue != localFileByPath->lastSyncedHashValue)
             : false;
-    bool isCloudRenamed = false;
 
     if (isLocalRenamed) {
       auto qEntry = localQueueByOrigin[cloudFile.origin];
@@ -169,6 +183,13 @@ ReconciliationResult ReconciliationService::reconcile(
       isCloudRenamed = localFileByOrigin
                            ? (localFileByOrigin->filename != cloudFile.filename)
                            : false;
+    }
+
+    if (!localFileByOrigin)
+      isCloudFileNew = true;
+    if (localFileByOrigin && localFileByOrigin->path != cloudFile.path &&
+        !isLocalFileMoved) {
+      isCloudFileMoved = true;
     }
 
     // New file in cloud
@@ -182,17 +203,21 @@ ReconciliationResult ReconciliationService::reconcile(
     // Existing file - handle updates / renames / conflicts
     if (localFileByOrigin) {
       if (isCloudModified && !isCloudRenamed && !isLocalModified &&
-          !isLocalRenamed) {
+          !isLocalRenamed && !isLocalFileMoved && !isCloudFileMoved) {
         result.filesToUpdate.push_back(cloudFile);
       }
       if (!isCloudModified && isCloudRenamed && !isLocalModified &&
-          !isLocalRenamed) {
+          !isLocalRenamed && !isLocalFileMoved && !isCloudFileMoved) {
         result.filesToRename.push_back({*localFileByOrigin, cloudFile});
       }
       // Conflict detection
       if (isCloudModified && !isCloudRenamed && isLocalModified &&
-          !isLocalRenamed) {
+          !isLocalRenamed && !isLocalFileMoved && !isCloudFileMoved) {
         result.filesInConflict.push_back(cloudFile);
+      }
+      if (!isCloudModified && !isCloudRenamed && !isLocalModified &&
+          !isLocalRenamed && !isLocalFileMoved && isCloudFileMoved) {
+        result.filesToMove.push_back({*localFileByOrigin, cloudFile});
       }
     }
 
@@ -249,6 +274,12 @@ ReconciliationResult ReconciliationService::reconcile(
   }
 
   for (const auto &[path, cloudDir] : cloudDirMap) {
+    if (dbDirMapByUuid.find(cloudDir.uuid) != dbDirMapByUuid.end() &&
+        dbDirMap.find(path) == dbDirMap.end()) {
+      std::cout << "[reconcile] rename detected >> Cloud Path" << path
+                << " | Local Path: "
+                << dbDirMapByUuid.find(cloudDir.uuid)->second.path << std::endl;
+    }
     if (dbDirMap.find(path) == dbDirMap.end()) {
       // Check if already in queue
       auto dirsInQ = m_dbManager.getDirectoryQueue();
@@ -283,6 +314,12 @@ ReconciliationResult ReconciliationService::reconcile(
   }
 
   for (const auto &[path, dbDir] : dbDirMap) {
+    if (cloudDirMapByUuid.find(dbDir.uuid) != cloudDirMapByUuid.end() &&
+        cloudDirMap.find(path) == cloudDirMap.end()) {
+      std::cout << "[reconcile] rename detected >> Local Path" << path
+                << " | Cloud Path: "
+                << cloudDirMapByUuid.find(dbDir.uuid)->second.path << std::endl;
+    }
     if (cloudDirMap.find(path) == cloudDirMap.end()) {
       auto dirsInQ = m_dbManager.getDirectoryQueue();
       bool alreadyInQ = std::any_of(
@@ -298,7 +335,7 @@ ReconciliationResult ReconciliationService::reconcile(
 
   // 8. Handle Directory Renames (using inodes from local queue)
   /*
-   *  std::vector<RenameInfo> renames = detectDirRenames(*localDirQueue);
+  std::vector<RenameInfo> renames = detectDirRenames(*localDirQueue);
   std::vector<RenameInfo> collapsed = collapseDirRenames(renames);
   reconcileDirRenamedCandidates(collapsed);
    */
@@ -399,8 +436,10 @@ void ReconciliationService::reconcileDirRenamedCandidates(
         dir.newPath == "/" ? m_syncPath : m_syncPath + dir.newPath;
     dq.absPath = abspath;
 
-    m_dbManager.upsertDirectoryQueue(dq);
-    // m_dbManager.deleteDirectoryQueue(dq.device, dq.folder, dq.path);
+    bool isQDeleted =
+        m_dbManager.deleteOrphanItemsInQueue(dq.path, *dq.old_path);
+    if (isQDeleted)
+      m_dbManager.upsertDirectoryQueue(dq);
   }
 }
 
@@ -412,11 +451,11 @@ std::optional<FileQueueEntry> ReconciliationService::localInQueueByAnyPath(
   auto itO = localQueueByOrigin.find(cloudFile.origin);
   if (itO != localQueueByOrigin.end())
     return itO->second;
-
-  auto itU = localQueueByUuid.find(cloudFile.uuid);
-  if (itU != localQueueByUuid.end() && !itU->second.empty())
-    return itU->second[0];
-
+  /*
+    auto itU = localQueueByUuid.find(cloudFile.uuid);
+    if (itU != localQueueByUuid.end() && !itU->second.empty())
+      return itU->second[0];
+  */
   auto itP =
       localQueueByPath.find(getUniqueKey(cloudFile.path, cloudFile.filename));
   if (itP != localQueueByPath.end())
@@ -434,6 +473,11 @@ void ReconciliationService::reconcileLocalState(
   // 1. Fetch current DB state
   auto dbFiles = m_dbManager.getAllFiles();
   auto dbDirs = m_dbManager.getAllDirectories();
+  bool isFiQDeleted = m_dbManager.deleteAllFilesInQueue();
+  bool isDiQDeleted = m_dbManager.deleteAllDirsInQueue();
+
+  if (!isDiQDeleted || !isDiQDeleted)
+    return;
 
   // Index DB State
   std::map<std::string, FileMetadata> dbFilesPathMap;
@@ -570,11 +614,11 @@ void ReconciliationService::reconcileLocalState(
   for (const auto &[key, dbFile] : dbFilesPathMap) {
     if (scanFilesMap.find(key) == scanFilesMap.end()) {
       std::cout << "[Reconcile] Offline DELETE detected: " << key << std::endl;
-
       // Create FileQueueEntry from FileMetadata
-      FileQueueEntry q(dbFile);
-      q.sync_status = syncStatusToString(SyncStatus::DELETE);
-      m_dbManager.deleteFile(dbFile.path, dbFile.filename, q);
+      FileQueueEntry fq;
+      fq = FileMetadata(dbFile);
+      fq.sync_status = syncStatusToString(SyncStatus::DELETE);
+      m_dbManager.deleteFile(dbFile.path, dbFile.filename, fq);
       //      m_dbManager.upsertFileQueue(q);
     }
   }
@@ -615,7 +659,8 @@ void ReconciliationService::reconcileLocalState(
     if (scanDirsMap.find(path) == scanDirsMap.end()) {
       std::cout << "[Reconcile] Offline DIR DELETE detected: " << path
                 << std::endl;
-      DirectoryQueueEntry q(dbDir);
+      DirectoryQueueEntry q;
+      q = DirectoryMetadata(dbDir);
       q.sync_status = syncStatusToString(SyncStatus::DELETE);
       m_dbManager.deleteFolderWithTransaction(dbDir.path, q);
       // m_dbManager.deleteDirectory(dbDir.path);
@@ -644,7 +689,7 @@ void ReconciliationService::reconcileLocalState(
     }
     if (!deleted.sync_status.empty() && !added.sync_status.empty() &&
         deleted.hashvalue == added.hashvalue) {
-      FileQueueEntry q(added);
+      FileQueueEntry q{added};
       added.sync_status = syncStatusToString(SyncStatus::RENAME);
       added.old_filename = deleted.filename;
       m_dbManager.deleteFileQueue(deleted.path, deleted.filename);
