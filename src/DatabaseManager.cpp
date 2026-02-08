@@ -1,7 +1,9 @@
 #include "DatabaseManager.hpp"
+#include "Utility.hpp"
 #include "types.hpp"
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <mutex>
 #include <sqlite3.h>
 #include <sqlite_orm/sqlite_orm.h>
@@ -118,11 +120,11 @@ void DatabaseManager::initializeSchema() {
 }
 
 pathParts DatabaseManager::getFolderDevice(const std::filesystem::path &path) {
-  pathParts parts{"", ""};
+  pathParts parts{"/", "/"};
   if (path.empty())
     return parts;
-  parts.device = path.root_name().string();
-  parts.folder = path.filename().string();
+  parts.device = path.root_name().generic_string();
+  parts.folder = path.filename().generic_string();
   if (parts.folder.empty())
     parts.folder = "/";
   auto root_dir = path.root_directory();
@@ -235,9 +237,8 @@ bool DatabaseManager::insertFile(const FileMetadata &file,
       try {
         auto dir = m_impl->storage.get<DirectoryMetadata>(p.device, p.folder,
                                                           file.path);
-        dq = DirectoryMetadata(dir);
-        dq.old_path = fileQueue.old_path;
-        dq.sync_status = syncStatusToString(SyncStatus::FILE_LINKED);
+        dq =
+            Utility::constructDirectoryQueueEntry(dir, SyncStatus::FILE_LINKED);
       } catch (const std::exception &e) {
         std::cerr << "[DB] " << e.what() << " device: " << p.device
                   << " path: " << file.path << std::endl;
@@ -303,7 +304,7 @@ bool DatabaseManager::deleteFile(const std::string &path,
       try {
         auto dir =
             m_impl->storage.get<DirectoryMetadata>(p.device, p.folder, path);
-        dq = DirectoryQueueEntry(dir);
+        dq = Utility::constructDirectoryQueueEntry(dir);
         dq.old_path = fq.old_path;
         dq.sync_status = syncStatusToString(SyncStatus::FILE_LINKED);
       } catch (const std::exception &e) {
@@ -371,6 +372,17 @@ DatabaseManager::getAllDirectories() {
   }
 }
 
+std::optional<std::vector<DirectoryMetadata>>
+DatabaseManager::getAllDirsInPath(const std::string &path) {
+  try {
+    return m_impl->storage.get_all<DirectoryMetadata>(
+        where(c(&DirectoryMetadata::path) == path) ||
+        like(&DirectoryMetadata::path, path + "/%"));
+  } catch (const std::exception &e) {
+    return std::nullopt;
+  }
+}
+
 std::optional<DirectoryMetadata>
 DatabaseManager::getDirectoryByPath(const std::string &device,
                                     const std::string &folder,
@@ -428,8 +440,23 @@ DatabaseManager::getAllFilesInDirectory(const std::string &path) {
   }
 }
 
+std::vector<FileMetadata>
+DatabaseManager::getFilesInDirectory(const std::string &path) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  try {
+
+    return m_impl->storage.get_all<FileMetadata>(
+        where(c(&FileMetadata::path) == path));
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error fetching from ->" << path << " " << e.what()
+              << std::endl;
+    return {};
+  }
+}
+
 std::optional<std::vector<FileQueueEntry>>
 DatabaseManager::getFileQueueByInode(const std::string &inode) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.get_all<FileQueueEntry>(
         where(c(&FileQueueEntry::inode) == inode));
@@ -484,6 +511,366 @@ bool DatabaseManager::insertDirectory(const DirectoryMetadata &dir,
   }
 }
 
+bool DatabaseManager::reconcileLocalState(
+    const std::vector<FileMetadata> &filesToAdd,
+    const std::vector<FileQueueEntry> &filesToDelete,
+    const std::vector<DirectoryMetadata> &dirsToAdd,
+    const std::vector<DirectoryQueueEntry> &dirsToDelete,
+    const std::vector<FileMetadata> &filesToModify,
+    const std::vector<FileQueueEntry> &filesToMove,
+    const std::vector<DirectoryQueueEntry> &dirsToMove) {
+  try {
+    return m_impl->storage.transaction([&]() {
+      std::map<std::string, DirectoryMetadata> dirsInMainMap;
+      std::map<std::string, DirectoryQueueEntry> dirsInQMap;
+
+      std::map<std::string, std::string> dirIDsMap;
+
+      std::vector<DirectoryQueueEntry> dirsInQ;
+      std::vector<DirectoryMetadata> dirsInMain;
+
+      std::vector<FileMetadata> filesInMain;
+      std::vector<FileQueueEntry> filesInQ;
+
+      std::set<std::string> filesToDeleteSet;
+
+      std::vector<DirectoryQueueEntry> dirsToDeleteWithStatus;
+
+      // *************************************************************************************
+      // 1. Add Dirs
+      // index the dir paths
+      std::for_each(
+          dirsToAdd.begin(), dirsToAdd.end(),
+          [&](const DirectoryMetadata &d) { dirsInMainMap[d.path] = d; });
+      // reserve the size
+      dirsInMain.reserve(dirsInMainMap.size());
+      // get the dirs to add in main
+      std::transform(dirsInMainMap.begin(), dirsInMainMap.end(),
+                     std::back_inserter(dirsInMain),
+                     [&](const auto &pair) { return pair.second; });
+      // reserve the size
+      dirsInQ.reserve(dirsInMain.size());
+      // dirs to add in queue
+      std::transform(
+          dirsInMain.begin(), dirsInMain.end(), std::back_inserter(dirsInQ),
+          [&](const DirectoryMetadata &d) {
+            DirectoryQueueEntry dq;
+            dq = Utility::constructDirectoryQueueEntry(d, SyncStatus::NEW);
+            //            dq.sync_status = syncStatusToString(SyncStatus::NEW);
+            return dq;
+          });
+      // insert dirs into main table
+      m_impl->storage.replace_range<DirectoryMetadata>(dirsInMain.begin(),
+                                                       dirsInMain.end());
+      // insert dirs into queue table
+      m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
+                                                         dirsInQ.end());
+      // clear queue dirs
+      dirsInQ.clear();
+      dirsInQMap.clear();
+      dirsInMainMap.clear();
+      dirsInMain.clear();
+
+      // *******************************************************************************************
+      // 2. Add Files
+
+      filesInMain.reserve(filesToAdd.size());
+      filesInQ.reserve(filesToAdd.size());
+
+      // map dirID to files
+      std::transform(filesToAdd.begin(), filesToAdd.end(),
+                     std::back_inserter(filesInMain),
+                     [&](const FileMetadata &f) {
+                       std::string dirID = "";
+                       auto it = dirIDsMap.find(f.path);
+                       if (it != dirIDsMap.end()) {
+                         dirID = it->second;
+                       } else {
+                         auto dirs = m_impl->storage.get_all<DirectoryMetadata>(
+                             where(c(&DirectoryMetadata::path) == f.path));
+                         if (!dirs.empty()) {
+                           dirID = dirs[0].uuid;
+                           dirIDsMap[f.path] = dirID;
+                         }
+                       }
+                       FileMetadata file{f};
+                       file.dirID = dirID;
+                       return file;
+                     });
+
+      // map the fileQ and corresponding DirQ to be added
+      std::transform(filesInMain.begin(), filesInMain.end(),
+                     std::back_inserter(filesInQ), [&](const FileMetadata &f) {
+                       FileQueueEntry fq;
+                       fq =
+                           Utility::constructFileQueueEntry(f, SyncStatus::NEW);
+                       pathParts p =
+                           getFolderDevice(std::filesystem::path(f.path));
+                       auto dir = m_impl->storage.get_all<DirectoryMetadata>(
+                           where(c(&DirectoryMetadata::device) == p.device &&
+                                 c(&DirectoryMetadata::folder) == p.folder &&
+                                 c(&DirectoryMetadata::path) == f.path));
+                       if (!dir.empty()) {
+                         DirectoryQueueEntry dq;
+                         dq = Utility::constructDirectoryQueueEntry(
+                             dir[0], SyncStatus::FILE_LINKED);
+                         dirsInQMap[f.path] = dq;
+                       }
+                       return fq;
+                     });
+
+      // reserve size for dirs to be added [ corresponding to files in Q]
+      dirsInQ.reserve(dirsInQMap.size());
+      filesInQ.reserve(filesToAdd.size());
+
+      // dirsQ to be added before inserting fileQs
+      std::transform(dirsInQMap.begin(), dirsInQMap.end(),
+                     std::back_inserter(dirsInQ),
+                     [&](const auto &pair) { return pair.second; });
+
+      // adding files into main table
+      m_impl->storage.replace_range<FileMetadata>(filesInMain.begin(),
+                                                  filesInMain.end());
+      // adding dirQ into Queue table
+      m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
+                                                         dirsInQ.end());
+      // adding filesQ into Queue table
+      m_impl->storage.replace_range<FileQueueEntry>(filesInQ.begin(),
+                                                    filesInQ.end());
+      dirsInQ.clear();
+      dirsInQMap.clear();
+      filesInQ.clear();
+      filesInMain.clear();
+      dirIDsMap.clear();
+
+      // ****************************************************************************
+      // 3. modify files
+
+      filesInMain.reserve(filesToModify.size());
+      filesInQ.reserve(filesToModify.size());
+
+      // map modified files with dirID
+      std::transform(filesToModify.begin(), filesToModify.end(),
+                     std::back_inserter(filesInMain),
+                     [&](const FileMetadata &f) {
+                       std::string dirID = "";
+                       auto it = dirIDsMap.find(f.path);
+                       if (it != dirIDsMap.end()) {
+                         dirID = it->second;
+                       } else {
+                         auto dirs = m_impl->storage.get_all<DirectoryMetadata>(
+                             where(c(&DirectoryMetadata::path) == f.path));
+                         if (!dirs.empty()) {
+                           dirID = dirs[0].uuid;
+                           dirIDsMap[f.path] = dirID;
+                         }
+                       }
+                       FileMetadata file{f};
+                       file.dirID = dirID;
+                       return file;
+                     });
+
+      // map modified filesQ with dirID & corresponding dirs to be added in
+      // Queue
+      std::transform(filesInMain.begin(), filesInMain.end(),
+                     std::back_inserter(filesInQ), [&](const FileMetadata &f) {
+                       FileQueueEntry fq;
+                       fq = Utility::constructFileQueueEntry(
+                           f, SyncStatus::MODIFIED);
+                       auto dir = m_impl->storage.get_all<DirectoryMetadata>(
+                           where(c(&DirectoryMetadata::path) == f.path));
+                       if (!dir.empty()) {
+                         DirectoryQueueEntry dq;
+                         dq = Utility::constructDirectoryQueueEntry(
+                             dir[0], SyncStatus::FILE_LINKED);
+                         auto it = dirsInQMap.find(dq.path);
+                         if (it == dirsInQMap.end()) {
+                           dirsInQMap[dq.path] = dq;
+                         }
+                       }
+                       return fq;
+                     });
+
+      dirsInQ.reserve(dirsInQMap.size());
+
+      // map dirQ to be inserted corresponding to filesQ
+      std::transform(dirsInQMap.begin(), dirsInQMap.end(),
+                     std::back_inserter(dirsInQ),
+                     [&](const auto &pair) { return pair.second; });
+
+      // adding modified files to main
+      m_impl->storage.replace_range<FileMetadata>(filesInMain.begin(),
+                                                  filesInMain.end());
+      // insert dirQ into queue
+      m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
+                                                         dirsInQ.end());
+
+      // adding modified files to Queue
+      m_impl->storage.replace_range<FileQueueEntry>(filesInQ.begin(),
+                                                    filesInQ.end());
+      filesInMain.clear();
+      filesInQ.clear();
+      dirsInQMap.clear();
+      dirsInQ.clear();
+
+      //****************************************************************************
+      // 4. remove files
+      // map files to be inserted as deleted in queue
+      std::transform(filesToDelete.begin(), filesToDelete.end(),
+                     std::back_inserter(filesInQ), [&](auto &f) {
+                       FileQueueEntry fq{f};
+                       fq.sync_status = syncStatusToString(SyncStatus::DELETE);
+                       auto it = dirsInQMap.find(f.path);
+                       if (it == dirsInQMap.end()) {
+                         auto dir = m_impl->storage.get_all<DirectoryMetadata>(
+                             where(c(&DirectoryMetadata::path) == f.path));
+                         if (!dir.empty()) {
+                           DirectoryQueueEntry dq;
+                           dq = Utility::constructDirectoryQueueEntry(
+                               dir[0], SyncStatus::FILE_LINKED);
+                           dirsInQMap[f.path] = dq;
+                         }
+                       }
+                       return fq;
+                     });
+
+      filesInQ.reserve(filesToDelete.size());
+
+      // delete files from main table
+      std::for_each(filesToDelete.begin(), filesToDelete.end(),
+                    [&](const auto &f) {
+                      m_impl->storage.remove_all<FileMetadata>(
+                          where(c(&FileMetadata::path) == f.path &&
+                                c(&FileMetadata::filename) == f.filename));
+                    });
+
+      dirsInQ.reserve(dirsInQMap.size());
+
+      // map dirs to be inserted into directory queue
+      std::transform(dirsInQMap.begin(), dirsInQMap.end(),
+                     std::back_inserter(dirsInQ),
+                     [&](const auto &pair) { return pair.second; });
+
+      // insert sync status for the files to be deleted in queue table
+
+      m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
+                                                         dirsInQ.end());
+      m_impl->storage.replace_range<FileQueueEntry>(filesInQ.begin(),
+                                                    filesInQ.end());
+
+      filesInQ.clear();
+      dirsInQ.clear();
+      dirsInQMap.clear();
+      // **************************************************************************
+      // 5. delete dirs
+      //
+      dirsInQ.reserve(dirsToDelete.size());
+
+      // map the dirs to be inserted in queue
+      std::transform(dirsToDelete.begin(), dirsToDelete.end(),
+                     std::back_inserter(dirsInQ), [&](const auto &d) {
+                       DirectoryQueueEntry dq{d};
+                       dq.sync_status = syncStatusToString(SyncStatus::DELETE);
+                       return dq;
+                     });
+
+      // mapping files to be deleted by path
+      std::for_each(dirsToDelete.begin(), dirsToDelete.end(),
+                    [&](auto &dq) { filesToDeleteSet.insert(dq.path); });
+
+      // delete files by path in main table
+      std::for_each(filesToDeleteSet.begin(), filesToDeleteSet.end(),
+                    [&](const std::string &path) {
+                      m_impl->storage.remove_all<FileMetadata>(
+                          where(c(&FileMetadata::path) == path));
+                    });
+
+      // remove dirs in main table
+      std::for_each(dirsToDelete.begin(), dirsToDelete.end(),
+                    [&](const auto &dq) {
+                      m_impl->storage.remove_all<DirectoryMetadata>(
+                          where(c(&DirectoryMetadata::path) == dq.path));
+                    });
+
+      // insert removed dirs in the queue
+      m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
+                                                         dirsInQ.end());
+
+      dirsInQ.clear();
+      //***************************************************************************
+      // 6. move/rename Dirs
+      // TODO:
+      // **************************************************************************
+      // 7. move/rename files
+      // TODO:
+      //****************************************************************************
+      return true;
+    });
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] exception : " << e.what() << std::endl;
+    return false;
+  }
+}
+bool DatabaseManager::moveFile(const FileMetadata &f,
+                               const FileQueueEntry &fq) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  try {
+    return m_impl->storage.transaction([&]() {
+      m_impl->storage.remove<FileMetadata>(fq.old_path, fq.old_filename);
+      m_impl->storage.replace<FileMetadata>(f);
+      m_impl->storage.replace<FileQueueEntry>(fq);
+      return true;
+    });
+
+  } catch (const std::exception &e) {
+    std::cout << "[DB] unable to rename the file ->" << e.what() << std::endl;
+    return false;
+  }
+}
+
+bool DatabaseManager::moveFiles(
+    const std::map<std::string, std::vector<FileQueueEntry>> &movedFiles) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  try {
+    return m_impl->storage.transaction([&]() {
+      std::set<std::string> oldPathSet;
+      for (auto &[path, files] : movedFiles) {
+        for (auto &f : files) {
+          oldPathSet.insert(*f.old_path);
+        }
+      }
+      for (auto &path : oldPathSet) {
+        m_impl->storage.remove_all<FileMetadata>(
+            where(c(&FileMetadata::path) == path));
+      }
+      for (auto &[path, qFiles] : movedFiles) {
+
+        std::vector<FileMetadata> files;
+        files.reserve(qFiles.size());
+        for (const auto &fq : qFiles) {
+          //          files.push_back(static_cast<const FileMetadata &>(fq));
+        }
+        for (auto &f : files) {
+          std::cout << "[DB_f] " << f.path << " | " << f.dirID << std::endl;
+          m_impl->storage.replace<FileMetadata>(FileMetadata{f});
+        }
+        for (auto &fq : qFiles) {
+          std::cout << "[DB_fq] " << fq.path << " | " << fq.dirID << std::endl;
+          //    m_impl->storage.replace<FileQueueEntry>(FileQueueEntry{fq});
+        }
+        // m_impl->storage.insert_range<FileMetadata>(files.begin(),
+        // files.end());
+        // m_impl->storage.insert_range<FileQueueEntry>(qFiles.begin(),
+        // qFiles.end());
+      }
+      return true;
+    });
+  } catch (const std::exception &e) {
+    std::cout << "[DB] unable to move the files ->" << e.what() << std::endl;
+    return false;
+  }
+}
+
 bool DatabaseManager::insertFileWithDirectory(
     FileMetadata &f, const std::vector<DirectoryMetadata> &dirs) {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
@@ -505,7 +892,7 @@ bool DatabaseManager::insertFileWithDirectory(
 
 bool DatabaseManager::updateMovedFile(const FileQueueEntry &fq,
                                       const FileMetadata &f) {
-
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
 
     return m_impl->storage.transaction([&]() {
@@ -939,40 +1326,31 @@ bool DatabaseManager::updateDirectoryQueue(const DirectoryQueueEntry &entry) {
   }
 }
 
-bool DatabaseManager::insertFilesAndDirectories(
-    const std::vector<FileMetadata> &files,
-    const std::vector<DirectoryMetadata> &dirs, const std::string &path,
-    const std::string &oldPath) {
+bool DatabaseManager::insertFilesAndDirectories(const DirectoryMetadata &dir,
+                                                const DirectoryQueueEntry &dirQ,
+                                                const std::string &path,
+                                                const std::string &oldPath) {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&]() {
-      for (auto &dir : dirs) {
-        m_impl->storage.replace<DirectoryMetadata>(dir);
-      }
-      for (auto &file : files) {
-        m_impl->storage.replace<FileMetadata>(file);
-      }
-      m_impl->storage.remove_all<FileQueueEntry>(
-          where(c(&FileQueueEntry::path) == oldPath ||
-                like(&FileQueueEntry::path, oldPath + "/%")));
-      m_impl->storage.remove_all<DirectoryQueueEntry>(
-          where(c(&DirectoryQueueEntry::path) == oldPath ||
-                like(&DirectoryQueueEntry::path, oldPath + "/%")));
-      auto p = getFolderDevice(std::filesystem::path(path));
-      DirectoryQueueEntry dq;
-      try {
-        auto d = m_impl->storage.get<DirectoryMetadata>(
-            where(c(&DirectoryMetadata::device) == p.device &&
-                  c(&DirectoryMetadata::folder) == p.folder &&
-                  c(&DirectoryMetadata::path) == path));
-        dq = DirectoryMetadata(d);
+      m_impl->storage.update_all(
+          set(c(&DirectoryMetadata::path) = dir.path,
+              c(&DirectoryMetadata::device) = dir.device,
+              c(&DirectoryMetadata::folder) = dir.folder,
+              c(&DirectoryMetadata::absPath) = dir.absPath),
+          where(c(&DirectoryMetadata::uuid) == dir.uuid));
 
-      } catch (...) {
-        return false;
-      }
-      dq.sync_status = syncStatusToString(SyncStatus::MOVED);
-      dq.old_path = oldPath;
-      m_impl->storage.replace(dq);
+      m_impl->storage.update_all(set(c(&FileMetadata::path) = path),
+                                 where(c(&FileMetadata::path) == oldPath));
+
+      m_impl->storage.remove_all<FileQueueEntry>(
+          where(c(&FileQueueEntry::path) == oldPath));
+
+      m_impl->storage.remove_all<DirectoryQueueEntry>(
+          where(c(&DirectoryQueueEntry::path) == oldPath));
+
+      m_impl->storage.replace<DirectoryQueueEntry>(dirQ);
+
       return true;
     });
 

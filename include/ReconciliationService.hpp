@@ -66,6 +66,18 @@ private:
           &localQueueByUuid,
       const std::map<std::string, FileQueueEntry> &localQueueByPath);
   std::vector<std::string> getPathComponents(const std::string &path);
+
+  FileQueueEntry createFileMetadata(const FileMetadata &f,
+                                    const ScannedFile &sFile,
+                                    bool isNewfile = true,
+                                    const std::string &dirID = "");
+  DirectoryMetadata createDirectoryMetadata(const std::string &path,
+                                            bool isNewDir = true,
+                                            const std::string &uuid = "");
+  DirectoryQueueEntry createDirectoryQueueEntry(const DirectoryMetadata &d,
+                                                SyncStatus &status);
+  DirectoryQueueEntry createFileQueueEntry(const FileMetadata &f,
+                                           SyncStatus &status);
 };
 
 struct PathDiff {

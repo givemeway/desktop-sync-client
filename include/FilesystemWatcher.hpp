@@ -1,4 +1,5 @@
 #pragma once
+#include "types.hpp"
 #include <efsw/efsw.hpp>
 #include <functional>
 #include <memory>
@@ -20,9 +21,10 @@ public:
   using Callback = std::function<void(
       const std::string &path, const std::string &oldPath, WatchEvent event)>;
 
-  FilesystemWatcher(const std::string &path,
-                    std::unordered_map<std::string, std::string> &inodesCache,
-                    Callback callback);
+  FilesystemWatcher(
+      const std::string &path,
+      std::unordered_map<std::string, InodeCacheInfo> &inodesCache,
+      Callback callback);
   ~FilesystemWatcher();
 
   void start();
@@ -32,7 +34,7 @@ private:
   struct Impl;
   std::unique_ptr<Impl> m_impl;
   std::string m_path;
-  std::unordered_map<std::string, std::string> m_inodesCache;
+  std::unordered_map<std::string, InodeCacheInfo> m_inodesCache;
   Callback m_callback;
 };
 

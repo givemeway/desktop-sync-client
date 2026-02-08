@@ -10,7 +10,6 @@
     "sqlite-orm",
     "efsw",
     "nlohmann-json",
-    "cpp-httplib",
     "picosha2"
   ]
 }

@@ -1,8 +1,8 @@
 #include "SyncWorker.hpp"
 #include "FilesystemWatcher.hpp"
 #include "ThreadPool.hpp"
+#include "Utility.hpp"
 #include "UuidUtils.hpp"
-#include "picosha2.h"
 #include "types.hpp"
 #include <atomic>
 #include <chrono>
@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <picosha2.h>
 #include <set>
 #include <string>
 #include <vector>
@@ -202,7 +203,7 @@ FileMetadata SyncWorker::constructFileMetadata(const ScannedFile &scannedFile,
                               : file.lastSyncedHashValue;
   f.lastSynced = file.lastSynced;
   f.dirID = file.dirID.empty() ? dirID : file.dirID;
-  f.conflictId = file.conflictId;
+  //  f.conflictId = file.conflictId;
   f.last_modified = std::to_string(scannedFile.mtime);
   f.size = scannedFile.size;
   f.uuid = file.uuid.empty() ? UuidUtils::generate() : file.uuid;
@@ -294,18 +295,19 @@ void SyncWorker::handleAdded(const std::string &path) {
         d.uuid = UuidUtils::generate();
         d.inode = m_impl->m_scanner.getInode(
             fs::path(path).parent_path().generic_string());
-        dq = DirectoryMetadata(d);
-        dq.old_path = d.path;
-        dq.sync_status = syncStatusToString(SyncStatus::FILE_LINKED);
+        std::string old_path = d.path;
+        dq = Utility::constructDirectoryQueueEntry(d, SyncStatus::FILE_LINKED,
+                                                   std::move(old_path));
         m_impl->m_dbManager.insertDirectory(d, dq);
         f.dirID = d.uuid;
         fq.dirID = d.uuid;
       }
       f.conflictId = "";
-      fq = FileMetadata(f);
-      fq.sync_status = syncStatusToString(SyncStatus::NEW);
-      fq.old_path = f.path;
-      fq.old_filename = f.filename;
+      //      std::string sync_status = syncStatusToString(SyncStatus::NEW);
+      std::string old_path = f.path;
+      std::string old_filename = f.filename;
+      fq = Utility::constructFileQueueEntry(
+          f, SyncStatus::NEW, std::move(old_path), std::move(old_filename));
       bool isFileInserted = m_impl->m_dbManager.insertFile(f, fq);
       if (!isFileInserted)
         std::cout << "[syncworker] file added into db FAILED" << f.absPath
@@ -334,9 +336,9 @@ void SyncWorker::handleAdded(const std::string &path) {
 
     if (!existingDir.has_value()) {
       d.uuid = UuidUtils::generate();
-      dq = DirectoryMetadata(d);
-      dq.sync_status = syncStatusToString(SyncStatus::NEW);
-      dq.old_path = d.path;
+      std::string old_path = d.path;
+      dq = Utility::constructDirectoryQueueEntry(d, SyncStatus::NEW,
+                                                 std::move(old_path));
       m_impl->m_dbManager.insertDirectory(d, dq);
     } else {
       std::cout << "[syncworker] Dir Already Exists, Skipping: " << path
@@ -359,7 +361,7 @@ void SyncWorker::handleDeleted(const std::string &path) {
   auto existingDir =
       m_impl->m_dbManager.getDirectoryByPath(p.device, p.folder, relPath);
   if (existingDir.has_value()) {
-    DirectoryQueueEntry dq(*existingDir);
+    DirectoryQueueEntry dq{Utility::constructDirectoryQueueEntry(*existingDir)};
     dq.sync_status = syncStatusToString(SyncStatus::DELETE);
     dq.old_path = dq.path;
     m_impl->m_dbManager.deleteFolderWithTransaction(relPath, dq);
@@ -370,16 +372,24 @@ void SyncWorker::handleDeleted(const std::string &path) {
   std::string filename = fs::path(relPath).filename().generic_string();
   auto existingFile = m_impl->m_dbManager.getFileByPath(filePath, filename);
   if (existingFile.has_value()) {
-    FileQueueEntry fq(*existingFile);
-    fq.old_path = fq.path;
-    fq.old_filename = fq.filename;
-    fq.sync_status = syncStatusToString(SyncStatus::DELETE);
+    FileQueueEntry fq;
+    std::string old_path = fq.path;
+    std::string old_filename = fq.filename;
+    //    std::string sync_status = syncStatusToString(SyncStatus::DELETE);
+    fq = Utility::constructFileQueueEntry(*existingFile, SyncStatus::DELETE,
+                                          std::move(old_path),
+                                          std::move(old_filename));
     m_impl->m_dbManager.deleteFile(existingFile->path, existingFile->filename,
                                    fq);
     return;
   }
   // Delete event triggered by the cloudsyncworker deleting local files;
-  std::cout << "[syncworker] skipping the delete event" << std::endl;
+  std::cout << "[syncworker] skipping delete: " << path << std::endl;
+  std::cout << "[syncworker] skipping delete RelPath: " << relPath << std::endl;
+  std::cout << "[syncworker] skipping delete device: " << p.device
+            << " folder: " << p.folder << std::endl;
+  std::cout << "[syncworker] skipping delete filePath: " << filePath
+            << " filename: " << filename << std::endl;
 };
 
 void SyncWorker::handleRenamed(const std::string &path,
@@ -403,7 +413,8 @@ void SyncWorker::handleRenamed(const std::string &path,
       auto existingDir = m_impl->m_dbManager.getDirectoryByPath(
           o.device, o.folder, oldRelPath);
       if (existingDir.has_value()) {
-        DirectoryQueueEntry dq(*existingDir);
+        DirectoryQueueEntry dq{
+            Utility::constructDirectoryQueueEntry(*existingDir)};
         dq.sync_status = syncStatusToString(SyncStatus::RENAME);
         dq.old_path = oldRelPath;
         dq.path = relPath;
@@ -484,19 +495,22 @@ void SyncWorker::handleRenamed(const std::string &path,
           d.folder = part.folder;
           d.uuid = UuidUtils::generate();
           d.inode = m_impl->m_scanner.getInode(path);
-          dq = DirectoryMetadata(d);
-          dq.old_path = oldRelPath;
-          dq.sync_status = syncStatusToString(SyncStatus::FILE_LINKED);
+          std::string old_path = oldRelPath;
+          dq = Utility::constructDirectoryQueueEntry(d, SyncStatus::FILE_LINKED,
+                                                     std::move(old_path));
           auto dirCreateResult = m_impl->m_dbManager.insertDirectory(d, dq);
           if (dirCreateResult)
             f.dirID = d.uuid;
           else
             return;
         }
-        fq = FileMetadata(f);
-        fq.old_filename = oldFileName;
-        fq.old_path = oldRelPath;
-        fq.sync_status = syncStatusToString(SyncStatus::RENAME);
+        std::string old_filename = oldFileName;
+        std::string old_path = oldRelPath;
+        //        fq.sync_status = syncStatusToString(SyncStatus::RENAME);
+
+        fq = Utility::constructFileQueueEntry(f, SyncStatus::RENAME,
+                                              std::move(old_path),
+                                              std::move(old_filename));
         f.conflictId = "";
         m_impl->m_dbManager.insertFile(f, fq);
         // triggerUpload();
@@ -550,6 +564,39 @@ void SyncWorker::handleRenamed(const std::string &path,
         return;
       }
       std::cout << "[syncworker] move failed" << std::endl;
+    } else {
+      std::string newRelPath = m_impl->m_scanner.toRelativePath(path);
+      fs::path oldFileAbsPath(oldPath);
+      fs::path base(m_impl->m_syncPath);
+      std::string baseRelPath =
+          fs::relative(oldFileAbsPath, base).parent_path().generic_string();
+      std::string oldRelPath = baseRelPath == "." ? "/" : "/" + baseRelPath;
+      std::string oldFilename = oldFileAbsPath.filename().generic_string();
+      std::string newFilename = fs::path(path).filename().generic_string();
+      std::lock_guard<std::recursive_mutex> lock(
+          m_impl->m_dbManager.getSyncMutex());
+      auto file = m_impl->m_dbManager.getFileByPath(oldRelPath, oldFilename);
+      if (file.has_value()) {
+        FileMetadata f{*file};
+        FileQueueEntry fq;
+        f.filename = newFilename;
+        f.path = newRelPath;
+        std::string old_path = oldRelPath;
+        std::string old_filename = oldFilename;
+        //        fq.sync_status = syncStatusToString(SyncStatus::MOVED);
+        fq = Utility::constructFileQueueEntry(*file, SyncStatus::MOVED,
+                                              std::move(old_path),
+                                              std::move(old_filename));
+        bool isFileMoved = m_impl->m_dbManager.moveFile(f, fq);
+        if (!isFileMoved) {
+          std::cerr << "[syncworker] unable to move the file from => "
+                    << oldRelPath << " to =>" << newRelPath << std::endl;
+        }
+      } else {
+        std::cout << "[syncworker] file not found. It has to be treated as Add "
+                     "& remove event.. Implementation pending.."
+                  << std::endl;
+      }
     }
 
     /*if (isMoved) {
@@ -596,11 +643,9 @@ void SyncWorker::handleRenamed(const std::string &path,
               pathParts p =
                   m_impl->m_dbManager.getFolderDevice(fs::path(f.path));
               auto d = m_impl->m_dbManager.getDirectoryByPath(p.device,
-                                                              p.folder, f.path);
-              FileMetadata file{};
-              if (d.has_value())
-                file = constructFileMetadata(f, {}, d->uuid);
-              else {
+                                                               p.folder,
+    f.path); FileMetadata file{}; if (d.has_value()) file =
+    constructFileMetadata(f, {}, d->uuid); else {
                 // create a new directory path;
               }
               files.push_back(file);
@@ -749,10 +794,12 @@ void SyncWorker::handleModified(const std::string &path) {
       auto timestamp =
           std::chrono::duration_cast<std::chrono::seconds>(now).count();
       f.lastSynced = std::to_string(timestamp);
-      fq = FileMetadata(f);
-      fq.sync_status = syncStatusToString(SyncStatus::MODIFIED);
-      fq.old_path = f.path;
-      fq.old_filename = f.filename;
+      //      fq.sync_status = syncStatusToString(SyncStatus::MODIFIED);
+      std::string old_path = f.path;
+      std::string old_filename = f.filename;
+      fq = Utility::constructFileQueueEntry(f, SyncStatus::MODIFIED,
+                                            std::move(old_path),
+                                            std::move(old_filename));
       f.conflictId = "";
       m_impl->m_dbManager.insertFile(f, fq);
       // triggerUpload();

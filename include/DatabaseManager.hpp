@@ -41,6 +41,11 @@ public:
 
   bool deleteAllDirsInQueue();
 
+  bool moveFile(const FileMetadata &f, const FileQueueEntry &fq);
+
+  bool moveFiles(
+      const std::map<std::string, std::vector<FileQueueEntry>> &movedFiles);
+
   bool insertFile(const FileMetadata &file, const FileQueueEntry &fileQueue);
 
   bool updateFile(const FileMetadata &file);
@@ -130,14 +135,26 @@ public:
 
   std::recursive_mutex &getSyncMutex();
 
-  bool insertFilesAndDirectories(const std::vector<FileMetadata> &files,
-                                 const std::vector<DirectoryMetadata> &dirs,
+  bool insertFilesAndDirectories(const DirectoryMetadata &dir,
+                                 const DirectoryQueueEntry &dirQ,
                                  const std::string &path,
                                  const std::string &oldPath);
   std::optional<std::vector<FileQueueEntry>>
   getFileQueueByInode(const std::string &inode);
 
   bool updateMovedFile(const FileQueueEntry &fq, const FileMetadata &f);
+
+  std::optional<std::vector<DirectoryMetadata>>
+  getAllDirsInPath(const std::string &path);
+
+  std::vector<FileMetadata> getFilesInDirectory(const std::string &path);
+  bool reconcileLocalState(const std::vector<FileMetadata> &filesToAdd,
+                           const std::vector<FileQueueEntry> &filesToDelete,
+                           const std::vector<DirectoryMetadata> &dirsToAdd,
+                           const std::vector<DirectoryQueueEntry> &dirsToDelete,
+                           const std::vector<FileMetadata> &filesToModify,
+                           const std::vector<FileQueueEntry> &filesToMove,
+                           const std::vector<DirectoryQueueEntry> &dirsToMove);
 
 private:
   std::string m_dbPath;

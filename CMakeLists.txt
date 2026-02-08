@@ -15,6 +15,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_definitions(-D_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
 add_definitions(-DSQLITE_ORM_OMIT_CTE)
 
+
 if(MINGW OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_compile_options("-Wa,-mbig-obj")
 endif()
@@ -23,14 +24,14 @@ endif()
 # All libraries below are header-only and provided in the 'external' folder
 include_directories(include)
 include_directories(external)
-include_directories(external/sqlite_orm_repo/include)
-include_directories(external/efsw/include)
+#include_directories(external/sqlite_orm_repo/include)
+#include_directories(external/efsw/include)
 
 # Add efsw subdirectory
-add_subdirectory(external/efsw EXCLUDE_FROM_ALL)
+#add_subdirectory(external/efsw EXCLUDE_FROM_ALL)
 
 # Create a library for SQLite (C file)
-add_library(sqlite3 STATIC external/sqlite3.c)
+#add_library(sqlite3 STATIC external/sqlite3.c)
 
 # Main executable (C++ files)
 add_executable(sync_client 
@@ -42,9 +43,9 @@ add_executable(sync_client
     src/FileSystemScanner.cpp
     src/SyncWorker.cpp
     src/CloudSyncWorker.cpp
+    src/Utility.cpp
   )
 
-# Find libmagic from vcpkg
 # Find libmagic from vcpkg
 find_package(unofficial-libmagic REQUIRED)
 add_definitions(-DHAVE_LIBMAGIC)
@@ -55,17 +56,63 @@ message(STATUS "libmagic found - using content-based MIME detection")
 find_package(OpenCV REQUIRED)
 message(STATUS "OpenCV ${OpenCV_VERSION} found")
 
+#Find efsw
+find_package(efsw CONFIG REQUIRED)
+message(STATUS "EFSW found")
+
+find_package(nlohmann_json CONFIG REQUIRED)
+message(STATUS "nlohman-json found")
+
+find_path(PICOSHA2_INCLUDES_DIRS "picosha2.h")
+
+find_package(unofficial-sqlite3 CONFIG REQUIRED) 
+message(STATUS "sqlite3 found")
+
+find_package(SqliteOrm CONFIG REQUIRED) 
+message(STATUS "Sqliteorm found")
+
+
 # Link Libraries
 if(WIN32)
     # Required for cpp-httplib on Windows
     if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-      target_link_libraries(sync_client PRIVATE sqlite3 efsw-static ws2_32 crypt32 unofficial::libmagic::libmagic ${OpenCV_LIBS} pthread)
+      target_link_libraries(sync_client PRIVATE
+        ws2_32 
+        crypt32 
+        unofficial::libmagic::libmagic 
+        ${OpenCV_LIBS} 
+        pthread 
+        efsw::efsw 
+        nlohmann_json::nlohmann_json 
+        unofficial::sqlite3::sqlite3 
+        sqlite_orm::sqlite_orm
+      )
     else()
-      target_link_libraries(sync_client PRIVATE sqlite3 efsw-static ws2_32 crypt32 unofficial::libmagic::libmagic ${OpenCV_LIBS})
+      target_link_libraries(sync_client PRIVATE 
+        ws2_32 
+        crypt32 
+        unofficial::libmagic::libmagic 
+        ${OpenCV_LIBS} 
+        efsw::efsw 
+        nlohmann_json::nlohmann_json 
+        unofficial::sqlite3::sqlite3 
+        sqlite_orm::sqlite_orm
+      )
     endif()
 else()
-  target_link_libraries(sync_client sqlite3 efsw-static pthread unofficial::libmagic::libmagic ${OpenCV_LIBS})
+  target_link_libraries(sync_client 
+    pthread 
+    unofficial::libmagic::libmagic 
+    ${OpenCV_LIBS} 
+    efsw::efsw 
+    nlohmann_json::nlohmann_json 
+    unofficial::sqlite3::sqlite3 
+    sqlite_orm::sqlite_orm
+  )
 endif()
+
+# picosha2 is header-only, include its directory instead of linking
+target_include_directories(sync_client PRIVATE ${PICOSHA2_INCLUDES_DIRS})
 
 # Installation rules for packaging
 install(TARGETS sync_client DESTINATION bin)

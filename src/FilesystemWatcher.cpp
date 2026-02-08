@@ -1,12 +1,14 @@
 #include "FilesystemWatcher.hpp"
-#include "efsw/efsw.hpp"
+#include "types.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <efsw/efsw.hpp>
 #include <filesystem>
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <sqlite_orm/sqlite_orm.h>
 #include <thread>
 #include <unordered_map>
 
@@ -28,12 +30,22 @@ struct PendingEvent {
   SettleState state;
   std::string oldPath;
   bool isMoved = false;
+  bool isAccesible = true;
+  std::string cachedInode = "";
+};
+
+struct RawEvent {
+  WatchEvent type;
+  std::string path;
+  std::string oldPath;
+  std::chrono::steady_clock::time_point arrivalTime;
 };
 
 struct DeletedItem {
   std::string inode;
   std::string path;
   std::chrono::steady_clock::time_point time;
+  bool isDir = false;
 };
 
 // Helper to check if file is locked on Windows
@@ -64,14 +76,17 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
   std::atomic<bool> workerRunning{false};
   std::atomic<int> pendingCount{0};
   std::map<std::string, DeletedItem> deletedItems;
-  std::unordered_map<std::string, std::string> &m_inodesCache;
+  std::unordered_map<std::string, InodeCacheInfo> &m_inodesCache;
   FilesystemWatcher::Callback callback;
+
+  // buffer to store the incoming event
+  std::vector<RawEvent> incomingEvents;
 
   // Configurable intervals
   std::chrono::milliseconds pollInterval{100};
   std::chrono::milliseconds settleTime{2000};
 
-  Impl(std::unordered_map<std::string, std::string> &inodesCache,
+  Impl(std::unordered_map<std::string, InodeCacheInfo> &inodesCache,
        FilesystemWatcher::Callback callback)
       : m_inodesCache(inodesCache), callback(callback) {}
   ~Impl() = default;
@@ -106,148 +121,122 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
   }
 
   void workerLoop() {
+    std::vector<RawEvent> localQueue;
     while (workerRunning) {
-      std::unique_lock<std::mutex> lock(mtx);
-      cv.wait(lock, [&] { return !workerRunning || !pendingEvents.empty(); });
+      if (incomingEvents.empty() && pendingEvents.empty()) {
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock,
+                [&]() { return !incomingEvents.empty() || !workerRunning; });
+      }
       if (!workerRunning)
         break;
+      {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!incomingEvents.empty())
+          localQueue.swap(incomingEvents);
+      }
+
       auto now = std::chrono::steady_clock::now();
 
+      for (auto raw : localQueue) {
+        bool isModifiedEvent = raw.type == WatchEvent::Modified;
+        auto it = pendingEvents.find(raw.path);
+        bool pathExists = it != pendingEvents.end();
+        bool isAddedEvent =
+            pathExists ? it->second.type == WatchEvent::Added : false;
+        if (isModifiedEvent && isAddedEvent)
+          continue;
+        auto mtime = (fs::file_time_type::min)();
+        auto nextCheck = now + pollInterval;
+        auto deletedTime = now;
+        auto fileState = SettleState::Polling;
+        bool isAccessible = true;
+        bool isMoved = false;
+        auto eventType = raw.type;
+        const std::string path = raw.path;
+        std::string oldPath = raw.oldPath;
+        try {
+          mtime = fs::last_write_time(path);
+        } catch (const std::exception &e) {
+          isAccessible = false;
+        }
+        pendingEvents[path] =
+            PendingEvent({eventType, mtime, nextCheck, deletedTime, fileState,
+                          oldPath, isMoved, isAccessible, ""});
+      }
+
+      {
+        std::lock_guard<std::mutex> lock(mtx);
+        localQueue.clear();
+      }
+
       for (auto it = pendingEvents.begin(); it != pendingEvents.end();) {
-        const std::string &path = it->first;
+        const std::string path = it->first;
         auto &ev = it->second;
         if (ev.type == WatchEvent::Renamed) {
+          std::string inode = "";
+          bool isDir = false;
+          try {
+            inode = getInode(path);
+            isDir = fs::is_directory(path);
+          } catch (...) {
+          }
           m_inodesCache.erase(ev.oldPath);
-          m_inodesCache[path] = getInode(path);
+          m_inodesCache[path] = InodeCacheInfo({inode, isDir});
           if (callback)
             callback(path, ev.oldPath, WatchEvent::Renamed);
           it = pendingEvents.erase(it);
           continue;
         }
-        if (ev.type == WatchEvent::Added || ev.type == WatchEvent::Modified) {
-          bool isDir = fs::is_directory(path);
-          auto inode = getInode(path);
-          if (isDir && ev.type == WatchEvent::Modified) {
-            it = pendingEvents.erase(it);
-            continue;
-          }
-          if (isDir) {
-            // folder add event
-            auto delIt = deletedItems.find(inode);
-            m_inodesCache[path] = inode;
-            if (delIt != deletedItems.end()) {
-              // folder move detected dispatch moved event
-              std::string oldPath = delIt->second.path;
-              if (callback)
-                callback(path, oldPath, WatchEvent::Moved);
-              pendingEvents.erase(oldPath);
-              m_inodesCache.erase(oldPath);
-              deletedItems.erase(inode);
-              it = pendingEvents.erase(it);
-              continue;
-            } else {
-              // its a new event. dispatch add event
-              if (callback)
-                callback(path, "", WatchEvent::Added);
-              it = pendingEvents.erase(it);
-              continue;
-            }
-          } else {
-            // file add event
-            auto delIt = deletedItems.find(inode);
-            if (delIt != deletedItems.end()) {
-              // file move detected wait for file to stabilize
-              std::string oldPath = delIt->second.path;
-              it->second.oldPath = oldPath;
-              it->second.isMoved = true;
-            }
-            if (now < it->second.nextCheck) {
-              ++it;
-              continue;
-            }
-            // 1. Check if file still exists
 
-            try {
-              if (!fs::exists(path)) {
-                auto iIt = m_inodesCache.find(path);
-                if (iIt != m_inodesCache.end()) {
-                  m_inodesCache.erase(iIt);
-                } else {
-                  if (callback) {
-                    callback(path, "", WatchEvent::Deleted);
-                  }
-                }
-                it = pendingEvents.erase(it);
-                continue;
-              }
-
-              auto currentMTime = fs::last_write_time(path);
-
-              if (currentMTime != it->second.lastMTime) {
-                // File is changing! Reset to polling state
-                it->second.lastMTime = currentMTime;
-                it->second.nextCheck = now + pollInterval;
-                it->second.state = SettleState::Polling;
-                ++it;
-              } else if (it->second.state == SettleState::Polling) {
-                // MTime is stable for 'pollInterval', move to 'settleTime'
-                it->second.state = SettleState::Settling;
-                it->second.nextCheck = now + settleTime;
-                ++it;
-              } else if (it->second.state == SettleState::Settling) {
-                // MTime has been stable for full 'settleTime'.
-                // Final Check: Is it locked by another process?
-                if (isFileAccessible(path)) {
-                  m_inodesCache[path] = inode;
-                  if (callback) {
-                    if (ev.isMoved) {
-                      callback(path, ev.oldPath, WatchEvent::Moved);
-                      m_inodesCache.erase(ev.oldPath);
-                      pendingEvents.erase(ev.oldPath);
-                      deletedItems.erase(inode);
-                    } else {
-                      callback(path, "", ev.type);
-                    }
-                  }
-                  it = pendingEvents.erase(it);
-                  continue;
-                } else {
-                  // Still locked! Stay in Settling state and check again soon
-                  it->second.nextCheck = now + pollInterval;
-                  ++it;
-                }
-              }
-            } catch (const fs::filesystem_error &e) {
-              // Errors like permission denied while checking mtime
-              it->second.nextCheck = now + pollInterval;
-              ++it;
-            }
-          }
+        if (now < ev.nextCheck) {
+          ++it;
+          continue;
         }
 
         if (ev.type == WatchEvent::Deleted) {
           auto cacheIt = m_inodesCache.find(path);
           if (cacheIt != m_inodesCache.end()) {
             // found the deleted file in cache.
-            std::string inode = cacheIt->second;
-            if (deletedItems.find(inode) == deletedItems.end()) {
-              deletedItems[inode] = {inode, path,
-                                     std::chrono::steady_clock::now()};
-              it->second.deletedTime = deletedItems[inode].time;
-
+            std::string inode = cacheIt->second.inode;
+            auto delIt = deletedItems.find(inode);
+            bool isDir = cacheIt->second.isDir;
+            if (delIt == deletedItems.end()) {
+              deletedItems[inode] = {inode, path, now, isDir};
+              ev.deletedTime = now;
+              ev.nextCheck = now + pollInterval;
+              ++it;
+              continue;
             } else {
               auto elapsed =
                   std::chrono::duration_cast<std::chrono::milliseconds>(
-                      now - deletedItems[inode].time)
-                      .count();
-
-              if (elapsed >
-                  (settleTime + std::chrono::milliseconds(500)).count()) {
+                      now - delIt->second.time);
+              bool isDir = delIt->second.isDir;
+              if (isDir && elapsed >= pollInterval) {
+                if (callback)
+                  callback(path, "", WatchEvent::Deleted);
+                m_inodesCache.erase(path);
+                deletedItems.erase(inode);
+                it = pendingEvents.erase(it);
+                continue;
+              }
+              if (isDir && elapsed <= pollInterval) {
+                ev.nextCheck = now + pollInterval;
+                ++it;
+                continue;
+              }
+              if (!isDir && elapsed >= settleTime) {
                 if (callback) {
                   callback(path, "", WatchEvent::Deleted);
                 }
+                m_inodesCache.erase(path);
                 deletedItems.erase(inode);
                 it = pendingEvents.erase(it);
+                continue;
+              }
+              if (!isDir && elapsed <= settleTime) {
+                ev.nextCheck = now + pollInterval;
+                ++it;
                 continue;
               }
             }
@@ -255,21 +244,119 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
             if (callback) {
               callback(path, "", WatchEvent::Deleted);
             }
+            m_inodesCache.erase(path);
             it = pendingEvents.erase(it);
             continue;
           }
-          ++it;
-          continue;
+        }
+
+        else if (ev.type == WatchEvent::Added ||
+                 ev.type == WatchEvent::Modified) {
+          try {
+            if (!fs::exists(path)) {
+              it = pendingEvents.erase(it);
+              continue;
+            }
+            bool isDir = fs::is_directory(path);
+            if (ev.cachedInode.empty())
+              ev.cachedInode = getInode(path);
+            auto inode = ev.cachedInode;
+            if (isDir && ev.type == WatchEvent::Modified) {
+              it = pendingEvents.erase(it);
+              continue;
+            }
+            auto delIt = deletedItems.find(inode);
+            if (isDir) {
+              // folder add event
+              m_inodesCache[path] = InodeCacheInfo({inode, true});
+              if (delIt != deletedItems.end()) {
+                // folder move detected dispatch moved event
+                std::string oldPath = delIt->second.path;
+                if (callback)
+                  callback(path, oldPath, WatchEvent::Moved);
+                m_inodesCache.erase(oldPath);
+                deletedItems.erase(inode);
+                pendingEvents.erase(oldPath);
+              } else {
+                // its a new event. dispatch add event
+                if (callback)
+                  callback(path, "", WatchEvent::Added);
+              }
+              it = pendingEvents.erase(it);
+              continue;
+            }
+            // file add or modified event
+            if (delIt != deletedItems.end()) {
+              // file move detected wait for file to stabilize
+              std::string oldPath = delIt->second.path;
+              ev.oldPath = oldPath;
+              ev.isMoved = true;
+            }
+
+            auto currentMTime = fs::last_write_time(path);
+
+            if (currentMTime != it->second.lastMTime) {
+              // File is changing! Reset to polling state
+              ev.lastMTime = currentMTime;
+              ev.nextCheck = now + pollInterval;
+              ev.state = SettleState::Polling;
+              ++it;
+              continue;
+            } else if (it->second.state == SettleState::Polling) {
+              // MTime is stable for 'pollInterval', move to 'settleTime'
+              ev.state = SettleState::Settling;
+              ev.nextCheck = now + settleTime;
+              ++it;
+              continue;
+            } else if (it->second.state == SettleState::Settling) {
+              // MTime has been stable for full 'settleTime'.
+              // Final Check: Is it locked by another process?
+              if (isFileAccessible(path)) {
+                m_inodesCache[path] = InodeCacheInfo({inode, false});
+                if (ev.isMoved) {
+                  if (callback)
+                    callback(path, ev.oldPath, WatchEvent::Moved);
+                  m_inodesCache.erase(ev.oldPath);
+                  pendingEvents.erase(ev.oldPath);
+                  deletedItems.erase(inode);
+                } else {
+                  if (callback)
+                    callback(path, "", ev.type);
+                }
+                it = pendingEvents.erase(it);
+                continue;
+              } else {
+                // Still locked! Stay in Settling state and check again soon
+                ev.nextCheck = now + pollInterval;
+                ++it;
+                continue;
+              }
+            }
+          } catch (const fs::filesystem_error &e) {
+            // Errors like permission denied while checking mtime
+            it->second.nextCheck = now + pollInterval;
+            ++it;
+          }
         }
       }
     }
   }
   void pushEvent(const std::string &path, const std::string &oldPath,
                  WatchEvent event) {
-    std::lock_guard<std::mutex> lock(mtx);
-    auto now = std::chrono::steady_clock::now();
+    {
+      std::lock_guard<std::mutex> lock(mtx);
+      incomingEvents.push_back(
+          {event, path, oldPath, std::chrono::steady_clock::now()});
+    }
+    cv.notify_one();
+  }
 
+  /*void pushEvent(const std::string &path, const std::string &oldPath,
+                 WatchEvent event) {
+    std::lock_guard<std::mutex> lock(mtx);
     // Requirement: ignore Modified if Add is already pending
+    if (pendingEvents.count(path))
+      return;
     if (event == WatchEvent::Modified) {
       auto existing = pendingEvents.find(path);
       if (existing != pendingEvents.end() &&
@@ -277,7 +364,7 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
         return;
       }
     }
-
+    auto now = std::chrono::steady_clock::now();
     try {
       fs::file_time_type mtime;
       if (fs::exists(path)) {
@@ -306,6 +393,7 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
       }
     }
   }
+  */
 
   // Implement FileWatchListener
   void handleFileAction(efsw::WatchID watchid, const std::string &dir,
@@ -315,37 +403,35 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
     std::string fullOldPath = dir + oldFilename;
     if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
       fullPath = dir + "/" + filename;
-    fullPath =
-        std::filesystem::path(fullPath).lexically_normal().generic_string();
 
     WatchEvent type;
 
-    auto now = std::chrono::steady_clock::now();
-
     if (action == efsw::Actions::Add) {
       type = WatchEvent::Added;
+      fullOldPath = "";
     } else if (action == efsw::Actions::Delete) {
       type = WatchEvent::Deleted;
+      fullOldPath = "";
     } else if (action == efsw::Actions::Modified) {
       type = WatchEvent::Modified;
+      fullOldPath = "";
     } else if (action == efsw::Actions::Moved) {
       if (!oldFilename.empty()) {
         if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
           fullOldPath = dir + "/" + oldFilename;
-        fullOldPath = std::filesystem::path(fullOldPath)
-                          .lexically_normal()
-                          .generic_string();
         type = WatchEvent::Renamed;
       }
     } else
       return;
+    fullPath = fs::path(fullPath).lexically_normal().generic_string();
+    fullOldPath = fs::path(fullOldPath).lexically_normal().generic_string();
     pushEvent(fullPath, fullOldPath, type);
   }
 };
 
 FilesystemWatcher::FilesystemWatcher(
     const std::string &path,
-    std::unordered_map<std::string, std::string> &inodesCache,
+    std::unordered_map<std::string, InodeCacheInfo> &inodesCache,
     Callback callback)
     : m_path(path), m_inodesCache(inodesCache), m_callback(callback),
       m_impl(std::make_unique<Impl>(inodesCache, callback)) {}

@@ -1,11 +1,15 @@
 #include "ReconciliationService.hpp"
 #include "FileSystemScanner.hpp"
+#include "Utility.hpp"
 #include "UuidUtils.hpp"
 #include "types.hpp"
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
+#include <sqlite_orm/sqlite_orm.h>
 #include <sstream>
+
+namespace fs = std::filesystem;
 
 namespace sync_app {
 
@@ -35,6 +39,50 @@ std::string ReconciliationService::getUniqueKey(const std::string &dir,
   }
   return normalizedDir + filename;
 }
+
+FileQueueEntry ReconciliationService::createFileMetadata(
+    const FileMetadata &file, const ScannedFile &sFile, bool isNewFile,
+    const std::string &dirID) {
+  FileMetadata f;
+  f.uuid = isNewFile ? UuidUtils::generate() : file.uuid;
+  f.path = sFile.path;
+  f.filename = sFile.filename;
+  f.last_modified = std::to_string(sFile.mtime);
+  f.hashvalue = sFile.hash;
+  f.size = sFile.size;
+  f.inode = sFile.inode;
+  f.absPath = sFile.absPath;
+  f.versions = isNewFile ? 1 : file.versions;
+  f.origin = isNewFile ? f.uuid : file.origin;
+  f.lastSyncedHashValue = isNewFile ? sFile.hash : file.lastSyncedHashValue;
+  f.dirID = !isNewFile ? dirID : "";
+  FileQueueEntry fq;
+  fq = Utility::constructFileQueueEntry(f);
+  return fq;
+}
+
+DirectoryMetadata ReconciliationService::createDirectoryMetadata(
+    const std::string &path, bool isNewDir, const std::string &uuid) {
+  DirectoryMetadata d;
+  pathParts part = m_dbManager.getFolderDevice(fs::path(path));
+  d.path = path;
+  d.absPath = path == "/" ? m_syncPath : m_syncPath + path;
+  d.device = part.device;
+  d.folder = part.folder;
+  d.uuid = isNewDir ? UuidUtils::generate() : uuid;
+  try {
+    d.inode = m_scanner.getInode(d.absPath);
+    fs::path dir{d.absPath};
+    auto ftime = fs::directory_entry(dir).last_write_time();
+    d.created_at = std::to_string(m_scanner.getUnixTimeStamp(ftime));
+  } catch (const fs::filesystem_error &e) {
+    d.created_at = "";
+    d.inode = "";
+    std::cerr << "Error: " << e.what() << std::endl;
+  }
+  return d;
+}
+
 std::vector<std::string>
 ReconciliationService::getPathComponents(const std::string &path) {
   if (path == "/" || path.empty()) {
@@ -273,14 +321,19 @@ ReconciliationResult ReconciliationService::reconcile(
     dbDirMapByUuid[d.uuid] = d;
   }
 
+  std::map<std::string, std::vector<LocalDirRenameMetadata>>
+      renameDirCandidates{};
+
   for (const auto &[path, cloudDir] : cloudDirMap) {
-    if (dbDirMapByUuid.find(cloudDir.uuid) != dbDirMapByUuid.end() &&
-        dbDirMap.find(path) == dbDirMap.end()) {
+    auto itUuid = dbDirMapByUuid.find(cloudDir.uuid);
+    auto itPath = dbDirMap.find(path);
+    if (itUuid != dbDirMapByUuid.end() && itPath != dbDirMap.end()) {
+      renameDirCandidates[cloudDir.uuid].push_back({itUuid->second, cloudDir});
       std::cout << "[reconcile] rename detected >> Cloud Path" << path
                 << " | Local Path: "
                 << dbDirMapByUuid.find(cloudDir.uuid)->second.path << std::endl;
     }
-    if (dbDirMap.find(path) == dbDirMap.end()) {
+    if (itPath == dbDirMap.end()) {
       // Check if already in queue
       auto dirsInQ = m_dbManager.getDirectoryQueue();
       bool alreadyInQ = std::any_of(
@@ -314,13 +367,15 @@ ReconciliationResult ReconciliationService::reconcile(
   }
 
   for (const auto &[path, dbDir] : dbDirMap) {
-    if (cloudDirMapByUuid.find(dbDir.uuid) != cloudDirMapByUuid.end() &&
-        cloudDirMap.find(path) == cloudDirMap.end()) {
+    auto itUuid = cloudDirMapByUuid.find(dbDir.uuid);
+    auto itPath = cloudDirMap.find(path);
+    if (itUuid != cloudDirMapByUuid.end() && itPath == cloudDirMap.end()) {
       std::cout << "[reconcile] rename detected >> Local Path" << path
                 << " | Cloud Path: "
                 << cloudDirMapByUuid.find(dbDir.uuid)->second.path << std::endl;
+      renameDirCandidates[dbDir.uuid].push_back({dbDir, itUuid->second});
     }
-    if (cloudDirMap.find(path) == cloudDirMap.end()) {
+    if (itPath == cloudDirMap.end()) {
       auto dirsInQ = m_dbManager.getDirectoryQueue();
       bool alreadyInQ = std::any_of(
           dirsInQ->begin(), dirsInQ->end(),
@@ -332,7 +387,6 @@ ReconciliationResult ReconciliationService::reconcile(
       }
     }
   }
-
   // 8. Handle Directory Renames (using inodes from local queue)
   /*
   std::vector<RenameInfo> renames = detectDirRenames(*localDirQueue);
@@ -368,12 +422,48 @@ std::vector<RenameInfo> ReconciliationService::detectDirRenames(
     auto oldEntry = *std::min_element(
         deletes.begin(), deletes.end(),
         [](const DirectoryQueueEntry &a, const DirectoryQueueEntry &b) {
-          return a.path.length() < b.path.length();
+          std::stringstream ss_1{a.path};
+          std::string token_1;
+          std::vector<std::string> seg_1;
+
+          while (std::getline(ss_1, token_1, '/')) {
+            if (!token_1.empty())
+              seg_1.push_back(token_1);
+          }
+
+          std::stringstream ss_2{b.path};
+          std::string token_2;
+          std::vector<std::string> seg_2;
+
+          while (std::getline(ss_2, token_2, '/')) {
+            if (!token_2.empty())
+              seg_2.push_back(token_2);
+          }
+
+          return seg_1.size() < seg_2.size();
         });
     auto newEntry = *std::min_element(
         news.begin(), news.end(),
         [](const DirectoryQueueEntry &a, const DirectoryQueueEntry &b) {
-          return a.path.length() < b.path.length();
+          std::stringstream ss_1{a.path};
+          std::string token_1;
+          std::vector<std::string> seg_1;
+
+          while (std::getline(ss_1, token_1, '/')) {
+            if (!token_1.empty())
+              seg_1.push_back(token_1);
+          }
+
+          std::stringstream ss_2{b.path};
+          std::string token_2;
+          std::vector<std::string> seg_2;
+
+          while (std::getline(ss_2, token_2, '/')) {
+            if (!token_2.empty())
+              seg_2.push_back(token_2);
+          }
+
+          return seg_1.size() < seg_2.size();
         });
 
     auto diff = findRenameDepthFromPath(oldEntry.path, newEntry.path);
@@ -505,17 +595,125 @@ void ReconciliationService::reconcileLocalState(
     scanDirsMap[d.path] = d;
   }
 
+  std::map<std::string, std::vector<ScannedFile>> scanFilesMapByInode;
+  for (const auto &f : scannedFiles) {
+    scanFilesMapByInode[f.inode].push_back(f);
+  }
+
+  std::map<std::string, ScannedDirectory> scanDirsMapByInode;
+  for (const auto &d : scannedDirs) {
+    scanDirsMapByInode[d.inode] = d;
+  }
+
+  std::map<std::string, std::vector<FileMetadata>> dbFilesByInode;
+  for (const auto &f : *dbFiles) {
+    dbFilesByInode[f.inode].push_back(f);
+  }
+
+  std::map<std::string, DirectoryMetadata> dbDirsByInode;
+  for (const auto &d : *dbDirs) {
+    dbDirsByInode[d.inode] = d;
+  }
+
+  std::vector<FileQueueEntry> movedFiles;
+  std::vector<DirectoryQueueEntry> movedDirs;
+  std::map<std::string, std::string> dirIDsMap;
+  std::vector<FileMetadata> filesToAdd;
+  std::map<std::string, DirectoryMetadata> dirsToAddMap;
+  std::vector<DirectoryMetadata> dirsToAdd;
+  std::vector<FileQueueEntry> filesToDelete;
+  std::vector<DirectoryQueueEntry> dirsToDelete;
+  std::vector<FileMetadata> filesToModify;
+  // 2. Identify Directory Changes
+
+  // Check for NEW directories
+  for (const auto &[path, sDir] : scanDirsMap) {
+    // auto itUuid = dbDirsByInode.find(sDir.inode);
+    auto itPath = dbDirsPathMap.find(path);
+
+    if (itPath == dbDirsPathMap.end()) {
+      std::cout << "[Reconcile] Offline DIR ADD detected: " << path
+                << std::endl;
+      DirectoryMetadata q;
+      pathParts p = m_dbManager.getFolderDevice(fs::path(sDir.path));
+      q.path = sDir.path;
+      q.device = p.device;
+      q.folder = sDir.name;
+      q.absPath = sDir.absPath;
+      q.inode = sDir.inode;
+      q.created_at = std::to_string(sDir.mtime);
+      q.uuid = UuidUtils::generate();
+      dirsToAddMap[q.path] = q;
+    }
+  }
+
+  // Check for DELETED directories
+  for (const auto &[path, dbDir] : dbDirsPathMap) {
+    //    auto itUuid = scanDirsMapByInode.find(dbDir.inode);
+    auto itPath = scanDirsMap.find(path);
+    /*
+        if (itUuid != scanDirsMapByInode.end() && itPath == scanDirsMap.end()) {
+          std::string uuid = dbDir.uuid;
+          std::string oldPath = dbDir.path;
+          std::string newPath = itUuid->second.path;
+          pathParts p = m_dbManager.getFolderDevice(fs::path(newPath));
+
+          auto dirExisting =
+              m_dbManager.getDirectoryByPath(p.device, p.folder, newPath);
+          if (dirExisting.has_value())
+            continue;
+
+          DirectoryMetadata newDir;
+          DirectoryQueueEntry newDirQ;
+
+          newDir = createDirectoryMetadata(newPath, false, uuid);
+          std::string old_path = oldPath;
+
+          newDirQ = Utility::constructDirectoryQueueEntry(newDir,
+       SyncStatus::MOVED, std::move(old_path));
+        }
+    */
+    if (itPath == scanDirsMap.end()) {
+      std::cout << "[Reconcile] Offline DIR DELETE detected: " << path
+                << std::endl;
+      DirectoryQueueEntry q{Utility::constructDirectoryQueueEntry(dbDir)};
+      q.sync_status = syncStatusToString(SyncStatus::DELETE);
+      dirsToDelete.push_back(q);
+    }
+  }
   // 2. Identify File Changes
 
   // Check for NEW or MODIFIED files
   for (const auto &[key, sFile] : scanFilesMap) {
-    if (dbFilesPathMap.find(key) == dbFilesPathMap.end()) {
-      // New File
+    // auto itInode = dbFilesByInode.find(sFile.inode);
+    auto itPath = dbFilesPathMap.find(key);
+    if (itPath != dbFilesPathMap.end()) {
+      const auto &dbFile = itPath->second;
+      if (dbFile.hashvalue != sFile.hash) {
+        // Modified File
+        std::cout << "[Reconcile] Offline MODIFY detected: " << key
+                  << std::endl;
+        FileMetadata f;
+        f.uuid = UuidUtils::generate();
+        f.path = sFile.path;
+        f.filename = sFile.filename;
+        f.last_modified = std::to_string(sFile.mtime);
+        f.hashvalue = sFile.hash;
+        f.size = sFile.size;
+        f.inode = sFile.inode;
+        f.absPath = sFile.absPath;
+        f.dirID = dbFile.dirID;
+        f.versions = dbFile.versions + 1;
+        f.origin = dbFile.origin;
+        f.lastSyncedHashValue = dbFile.hashvalue;
+        filesToModify.push_back(f);
+      }
+      continue;
+    }
+    if (itPath == dbFilesPathMap.end()) {
       std::cout << "[Reconcile] Offline ADD detected: " << key << std::endl;
       FileMetadata f;
-      FileQueueEntry fq;
-
-      f.uuid = UuidUtils::generate();
+      f.uuid = f.origin = UuidUtils::generate();
       f.path = sFile.path;
       f.filename = sFile.filename;
       f.last_modified = std::to_string(sFile.mtime);
@@ -523,184 +721,393 @@ void ReconciliationService::reconcileLocalState(
       f.size = sFile.size;
       f.inode = sFile.inode;
       f.absPath = sFile.absPath;
-      f.versions = 1;
-      f.origin = f.uuid;
-      f.lastSyncedHashValue = sFile.hash;
-
-      fq = FileMetadata(f);
-      fq.sync_status = syncStatusToString(SyncStatus::NEW);
-      fq.old_filename = sFile.filename;
-      fq.old_path = sFile.path;
-
-      pathParts part = m_dbManager.getFolderDevice(f.path);
-      std::cout << "[Reconcile] "
-                << "device : " << part.device << " folder: " << part.folder
-                << " path: " << f.path << std::endl;
-      auto dir =
-          m_dbManager.getDirectoryByPath(part.device, part.folder, f.path);
-      std::cout << "[Reconcile] dir value exists : " << dir.has_value()
-                << std::endl;
-      if (dir.has_value()) {
-        fq.dirID = dir->uuid;
-        f.dirID = dir->uuid;
+      DirectoryMetadata d;
+      d = createDirectoryMetadata(f.path);
+      auto itDirID = dirIDsMap.find(f.path);
+      if (itDirID != dirIDsMap.end()) {
+        f.dirID = itDirID->second;
       } else {
-        // create the directory path
-        DirectoryQueueEntry dq;
-        DirectoryMetadata d;
-        d.path = f.path;
-        d.device = part.device;
-        d.folder = part.folder;
-        d.uuid = UuidUtils::generate();
-        if (d.path != "/")
-          d.absPath = m_syncPath + "/" + d.path;
-        else
-          d.absPath = m_syncPath;
-        try {
-          d.inode = m_scanner.getInode(d.absPath);
-          std::filesystem::path dir{d.absPath};
-          auto ftime = std::filesystem::directory_entry(dir).last_write_time();
-          d.created_at = std::to_string(m_scanner.getUnixTimeStamp(ftime));
-        } catch (const std::filesystem::filesystem_error &e) {
-          d.created_at = "";
-          d.inode = "";
-          std::cerr << "Error: " << e.what() << std::endl;
-        }
-        // Create DirectoryQueueEntry from DirectoryMetadata
-        dq = DirectoryQueueEntry(d);
-        dq.sync_status = syncStatusToString(SyncStatus::FILE_LINKED);
-        dq.old_path = d.path;
-        //        m_dbManager.insertDirectoryQueue(dq);
-        auto result = m_dbManager.insertDirectory(d, dq);
-        if (result) {
-          fq.dirID = d.uuid;
-          f.dirID = d.uuid;
+        auto existingDir =
+            m_dbManager.getDirectoryByPath(d.device, d.folder, d.path);
+        if (existingDir.has_value()) {
+          f.dirID = existingDir->uuid;
+          dirIDsMap[d.path] = existingDir->uuid;
         } else {
-          return;
+          auto itDir = dirsToAddMap.find(d.path);
+          if (itDir != dirsToAddMap.end()) {
+            f.dirID = itDir->second.uuid;
+            dirIDsMap[d.path] = itDir->second.uuid;
+          } else {
+            dirsToAddMap[d.path] = d;
+          }
         }
       }
-      m_dbManager.insertFile(f, fq);
-      //      m_dbManager.upsertFileQueue(fq);
-      //    m_dbManager.upsertFile(f);
-    } else {
-
-      const auto &dbFile = dbFilesPathMap[key];
-      if (dbFile.hashvalue != sFile.hash) {
-        // Modified File
-        std::cout << "[Reconcile] Offline MODIFY detected: " << key
+      filesToAdd.push_back(f);
+    }
+    /*
+     *if (itInode != dbFilesByInode.end()) {
+        // check if this added file has a corresponding delete pair
+        std::cout << "[Reconcile] Offline File move Detected" << key
                   << std::endl;
-        FileQueueEntry fq;
+        auto itScan = scanFilesMapByInode.find(sFile.inode);
+        // compare scanned files inode with the corresponding inodes in db
+        for (auto &file : itInode->second) {
+          auto key = file.path == "/" ? "/" + file.filename
+                                      : file.path + "/" + file.filename;
+          auto itPath = dbFilesPathMap.find(key);
+          if (itPath != dbFilesPathMap.end())
+            continue;
+          FileQueueEntry newFile;
+          std::string oldPath = file.path;
+          std::string newPath = sFile.path;
+          std::string oldFilename = file.filename;
+          std::string newFilename =
+              fs::path(sFile.absPath).filename().generic_string();
+          std::string dirID = "";
+          auto itDirIDs = dirIDsMap.find(newPath);
+
+          if (itDirIDs != dirIDsMap.end()) {
+            dirID = itDirIDs->second;
+
+          } else {
+            pathParts p = m_dbManager.getFolderDevice(fs::path(newPath));
+            auto d =
+                m_dbManager.getDirectoryByPath(p.device, p.folder, newPath);
+            if (d.has_value()) {
+              dirID = d->uuid;
+              dirIDsMap[newPath] = d->uuid;
+            } else {
+              DirectoryMetadata d;
+
+              d = createDirectoryMetadata(newPath, true);
+
+              DirectoryQueueEntry dq;
+              std::string old_path = dq.path;
+
+              dq = Utility::constructDirectoryQueueEntry(
+                  d, SyncStatus::FILE_LINKED, std::move(old_path));
+              auto isInserted = m_dbManager.insertDirectory(d, dq);
+
+              if (isInserted) {
+                auto insertedDir =
+                    m_dbManager.getDirectoryByPath(p.device, p.folder, newPath);
+                if (insertedDir.has_value()) {
+                  newFile.dirID = insertedDir->uuid;
+                  dirIDsMap[newPath] = insertedDir->uuid;
+                } else {
+                  std::cout
+                      << "[Reconcile] unable to find directory by path => "
+                      << newPath << std::endl;
+                  continue;
+                }
+              } else {
+                std::cout << "[Reconcile] unable to insert Directory => "
+                          << newPath << std::endl;
+                continue;
+              }
+            }
+          }
+          newFile = createFileMetadata(file, sFile, false, dirID); // newFile
+          newFile.old_filename = oldFilename;
+          newFile.old_path = oldPath;
+          newFile.sync_status = syncStatusToString(SyncStatus::MOVED);
+          movedFiles[newPath].push_back(newFile);
+        }
+        continue;
+      }
+      if (itInode == dbFilesByInode.end()) {
+        // New File
+        std::cout << "[Reconcile] Offline ADD detected: " << key << std::endl;
         FileMetadata f;
+        f.uuid = f.origin = UuidUtils::generate();
         f.path = sFile.path;
-        f.dirID = dbFile.dirID;
         f.filename = sFile.filename;
-        f.absPath = sFile.absPath;
-        f.inode = sFile.inode;
-        f.hashvalue = sFile.hash;
-        f.lastSyncedHashValue = dbFile.lastSyncedHashValue;
-        f.size = sFile.size;
         f.last_modified = std::to_string(sFile.mtime);
-        f.uuid = UuidUtils::generate();
-        f.origin = dbFile.origin;
-        f.versions = dbFile.versions + 1;
-        fq = FileMetadata(f);
-        fq.sync_status = syncStatusToString(SyncStatus::MODIFIED);
-        m_dbManager.insertFile(f, fq);
-        //        m_dbManager.upsertFile(f);
-        //      m_dbManager.upsertFileQueue(fq);
+        f.hashvalue = sFile.hash;
+        f.size = sFile.size;
+        f.inode = sFile.inode;
+        f.absPath = sFile.absPath;
+        DirectoryMetadata d;
+        d = createDirectoryMetadata(f.path);
+        auto itDirID = dirIDsMap.find(f.path);
+        if (itDirID != dirIDsMap.end()) {
+          f.dirID = itDirID->second;
+        } else {
+          auto dir = m_dbManager.getDirectoryByPath(d.device, d.folder, d.path);
+          if (dir.has_value()) {
+            f.dirID = dir->uuid;
+            dirIDsMap[d.path] = dir->uuid;
+          } else {
+            dirsToAddMap.push_back(d);
+          }
+        }
+
+        filesToAdd.push_back(f);
       }
-    }
+     */
   }
+
   // Check for DELETED files
+
   for (const auto &[key, dbFile] : dbFilesPathMap) {
-    if (scanFilesMap.find(key) == scanFilesMap.end()) {
-      std::cout << "[Reconcile] Offline DELETE detected: " << key << std::endl;
-      // Create FileQueueEntry from FileMetadata
-      FileQueueEntry fq;
-      fq = FileMetadata(dbFile);
-      fq.sync_status = syncStatusToString(SyncStatus::DELETE);
-      m_dbManager.deleteFile(dbFile.path, dbFile.filename, fq);
-      //      m_dbManager.upsertFileQueue(q);
-    }
-  }
+    // auto itUuid = scanFilesMapByInode.find(dbFile.inode);
+    auto itPath = scanFilesMap.find(key);
+    /*
+    if (itUuid != scanFilesMapByInode.end() && itPath == scanFilesMap.end()) {
+      for (const auto &sFile : itUuid->second) {
+        auto fileExists = m_dbManager.getFileByPath(
+            sFile.path, sFile.filename); // scannedfile is new file
+        if (fileExists.has_value())
+          continue;
+        FileQueueEntry newFile;
+        std::string oldPath = dbFile.path;
+        std::string newPath = sFile.path;
+        std::string oldFilename = dbFile.filename;
+        std::string newFilename =
+            fs::path(sFile.absPath).filename().generic_string();
+        newFile = createFileMetadata(dbFile, sFile, false); // newFile
+        newFile.old_filename = oldFilename;
+        newFile.old_path = oldPath;
+        newFile.sync_status = syncStatusToString(SyncStatus::MOVED);
+        auto itDirIDs = dirIDsMap.find(newPath);
+        if (itDirIDs != dirIDsMap.end()) {
+          newFile.dirID = itDirIDs->second;
+        } else {
+          pathParts p = m_dbManager.getFolderDevice(fs::path(newPath));
+          auto d = m_dbManager.getDirectoryByPath(p.device, p.folder, newPath);
+          if (d.has_value()) {
+            newFile.dirID = d->uuid;
+            dirIDsMap[newPath] = d->uuid;
+          } else {
+            DirectoryMetadata d;
+            d = createDirectoryMetadata(newPath, true);
 
-  // 3. Identify Directory Changes
+            DirectoryQueueEntry dq;
 
-  // Check for NEW directories
-  for (const auto &[path, sDir] : scanDirsMap) {
-    if (dbDirsPathMap.find(path) == dbDirsPathMap.end()) {
-      std::cout << "[Reconcile] Offline DIR ADD detected: " << path
-                << std::endl;
-      DirectoryMetadata q;
-      DirectoryQueueEntry qd;
-      q.path = sDir.path;
-      q.folder = sDir.name;
-      q.absPath = sDir.absPath;
-      q.inode = sDir.inode;
-      q.created_at = std::to_string(sDir.mtime);
-      pathParts part = m_dbManager.getFolderDevice(sDir.path);
-      auto existingDir =
-          m_dbManager.getDirectoryByPath(part.device, sDir.name, sDir.path);
-      if (existingDir.has_value()) {
-        q.uuid = existingDir->uuid;
-      } else {
-        q.uuid = UuidUtils::generate();
+            dq.sync_status = syncStatusToString(SyncStatus::FILE_LINKED);
+
+            std::string old_path = dq.path;
+
+            dq = Utility::constructDirectoryQueueEntry(
+                d, SyncStatus::FILE_LINKED, std::move(old_path));
+
+            auto isInserted = m_dbManager.insertDirectory(d, dq);
+
+            if (isInserted) {
+              auto insertedDir =
+                  m_dbManager.getDirectoryByPath(p.device, p.folder, newPath);
+              if (insertedDir.has_value()) {
+                newFile.dirID = insertedDir->uuid;
+                dirIDsMap[newPath] = insertedDir->uuid;
+              } else {
+                std::cout << "[Reconcile] unable to find directory by path => "
+                          << newPath << std::endl;
+                continue;
+              }
+            } else {
+              std::cout << "[Reconcile] unable to insert Directory => "
+                        << newPath << std::endl;
+              continue;
+            }
+          }
+        }
+        movedFiles[newPath].push_back(newFile);
       }
-      q.device = part.device;
-      qd = DirectoryMetadata(q);
-      qd.sync_status = syncStatusToString(SyncStatus::NEW);
-      m_dbManager.insertDirectory(q, qd);
-      //      m_dbManager.upsertDirectory(q);
-      //    m_dbManager.upsertDirectoryQueue(qd);
+    }
+    */
+    if (itPath == scanFilesMap.end()) {
+      std::cout << "[Reconcile] Offline DELETE detected: " << key << std::endl;
+      FileQueueEntry fq;
+      fq = Utility::constructFileQueueEntry(dbFile, SyncStatus::DELETE);
+      filesToDelete.push_back(fq);
     }
   }
 
-  // Check for DELETED directories
-  for (const auto &[path, dbDir] : dbDirsPathMap) {
-    if (scanDirsMap.find(path) == scanDirsMap.end()) {
-      std::cout << "[Reconcile] Offline DIR DELETE detected: " << path
-                << std::endl;
-      DirectoryQueueEntry q;
-      q = DirectoryMetadata(dbDir);
-      q.sync_status = syncStatusToString(SyncStatus::DELETE);
-      m_dbManager.deleteFolderWithTransaction(dbDir.path, q);
-      // m_dbManager.deleteDirectory(dbDir.path);
-      // m_dbManager.upsertDirectoryQueue(q);
+  std::map<std::string, std::vector<FileQueueEntry>> movedFileCandidates;
+  std::map<std::string, std::vector<DirectoryQueueEntry>> movedDirCandidates;
+
+  for (auto &f : filesToAdd) {
+    movedFileCandidates[f.inode].push_back(
+        Utility::constructFileQueueEntry(f, SyncStatus::NEW));
+  }
+
+  for (auto &f : filesToDelete) {
+    movedFileCandidates[f.inode].push_back(f);
+  }
+
+  for (auto &[path, d] : dirsToAddMap) {
+    movedDirCandidates[d.inode].push_back(
+        Utility::constructDirectoryQueueEntry(d, SyncStatus::NEW));
+  }
+
+  for (auto &dq : dirsToDelete) {
+    movedDirCandidates[dq.inode].push_back(dq);
+  }
+
+  filesToAdd.clear();
+  filesToDelete.clear();
+  dirsToAddMap.clear();
+  dirsToDelete.clear();
+  dirsToAdd.clear();
+
+  for (const auto &[inode, group] : movedFileCandidates) {
+    if (group.size() == 2) {
+      bool isMoved = false;
+      FileQueueEntry newFile, oldFile;
+
+      if (group[0].sync_status == syncStatusToString(SyncStatus::NEW) &&
+          group[1].sync_status == syncStatusToString(SyncStatus::DELETE)) {
+        isMoved = true;
+        newFile = group[0];
+        oldFile = group[1];
+      }
+
+      if (group[0].sync_status == syncStatusToString(SyncStatus::DELETE) &&
+          group[1].sync_status == syncStatusToString(SyncStatus::NEW)) {
+        isMoved = true;
+        newFile = group[1];
+        oldFile = group[0];
+      }
+
+      if (isMoved) {
+        FileQueueEntry f;
+        f.filename = newFile.filename;
+        f.path = newFile.path;
+        f.absPath = newFile.absPath;
+        f.old_filename = oldFile.filename;
+        f.old_path = oldFile.path;
+        f.inode = newFile.inode;
+        f.versions = newFile.versions;
+        f.dirID = oldFile.dirID;
+        f.lastSynced = "";
+        f.last_modified = newFile.last_modified;
+        f.hashvalue = newFile.hashvalue;
+        f.lastSyncedHashValue = newFile.lastSyncedHashValue;
+        f.size = newFile.size;
+        f.origin = oldFile.origin;
+        f.uuid = oldFile.uuid;
+        f.sync_status = syncStatusToString(SyncStatus::MOVED);
+        movedFiles.push_back(f);
+
+      } else {
+        for (auto &f : group) {
+          if (f.sync_status == syncStatusToString(SyncStatus::NEW)) {
+            filesToAdd.push_back(Utility::constructFileMetadata(f));
+          }
+          if (f.sync_status == syncStatusToString(SyncStatus::DELETE)) {
+            filesToDelete.push_back(f);
+          }
+        }
+      }
+    } else {
+      for (auto &f : group) {
+        if (f.sync_status == syncStatusToString(SyncStatus::NEW)) {
+          filesToAdd.push_back(Utility::constructFileMetadata(f));
+        }
+        if (f.sync_status == syncStatusToString(SyncStatus::DELETE)) {
+          filesToDelete.push_back(f);
+        }
+      }
     }
   }
-  auto filesInQueue = m_dbManager.getAllQueueFiles();
-  std::map<std::string, std::vector<FileQueueEntry>> inodeGroups;
-  std::map<std::string, std::vector<FileQueueEntry>> renamedCandidates;
-  for (const FileQueueEntry &f : *filesInQueue) {
-    inodeGroups[f.inode].push_back(f);
-  }
-  for (const auto &[inode, files] : inodeGroups) {
-    if (files.size() == 2) {
-      renamedCandidates[inode] = files;
+
+  for (const auto &[inode, group] : movedDirCandidates) {
+    if (group.size() == 2) {
+      bool isMoved = false;
+      DirectoryQueueEntry newDir, oldDir;
+
+      if (group[0].sync_status == syncStatusToString(SyncStatus::NEW) &&
+          group[1].sync_status == syncStatusToString(SyncStatus::DELETE)) {
+        isMoved = true;
+        newDir = group[0];
+        oldDir = group[1];
+      }
+
+      if (group[0].sync_status == syncStatusToString(SyncStatus::DELETE) &&
+          group[1].sync_status == syncStatusToString(SyncStatus::NEW)) {
+        isMoved = true;
+        newDir = group[1];
+        oldDir = group[0];
+      }
+
+      if (isMoved) {
+        DirectoryQueueEntry d;
+        d.folder = newDir.folder;
+        d.path = newDir.path;
+        d.device = newDir.device;
+        d.created_at = newDir.created_at;
+        d.absPath = newDir.absPath;
+        d.old_path = oldDir.path;
+        d.sync_status = syncStatusToString(SyncStatus::MOVED);
+        d.inode = newDir.inode;
+        d.lastSynced = "";
+        d.uuid = oldDir.uuid;
+        movedDirs.push_back(d);
+      } else {
+        for (auto &d : group) {
+          if (d.sync_status == syncStatusToString(SyncStatus::NEW)) {
+            dirsToAdd.push_back(Utility::constructDirectoryMetadata(d));
+          }
+          if (d.sync_status == syncStatusToString(SyncStatus::DELETE)) {
+            dirsToDelete.push_back(d);
+          }
+        }
+      }
+    } else {
+      for (auto &d : group) {
+        if (d.sync_status == syncStatusToString(SyncStatus::NEW)) {
+          dirsToAdd.push_back(Utility::constructDirectoryMetadata(d));
+        }
+        if (d.sync_status == syncStatusToString(SyncStatus::DELETE)) {
+          dirsToDelete.push_back(d);
+        }
+      }
     }
   }
-  for (const auto &[inode, files] : renamedCandidates) {
-    FileQueueEntry deleted{};
-    FileQueueEntry added{};
-    for (const auto &file : files) {
-      if (file.sync_status == syncStatusToString(SyncStatus::NEW))
-        added = file;
-      if (file.sync_status == syncStatusToString(SyncStatus::DELETE))
-        deleted = file;
-    }
-    if (!deleted.sync_status.empty() && !added.sync_status.empty() &&
-        deleted.hashvalue == added.hashvalue) {
-      FileQueueEntry q{added};
-      added.sync_status = syncStatusToString(SyncStatus::RENAME);
-      added.old_filename = deleted.filename;
-      m_dbManager.deleteFileQueue(deleted.path, deleted.filename);
-      m_dbManager.updateFileQueue(added);
-    }
-  }
-  std::optional<std::vector<DirectoryQueueEntry>> qDirs =
-      m_dbManager.getAllQueueDirectories();
+
+  bool isLocalDBUpdated = m_dbManager.reconcileLocalState(
+      filesToAdd, filesToDelete, dirsToAdd, dirsToDelete, filesToModify,
+      movedFiles, movedDirs);
+
+  std::cout << "[reconcile] isLocalDBUPdated : " << isLocalDBUpdated
+            << std::endl;
+  /*
+     auto filesInQueue = m_dbManager.getAllQueueFiles();
+     std::map<std::string, std::vector<FileQueueEntry>> inodeGroups;
+     std::map<std::string, std::vector<FileQueueEntry>> renamedCandidates;
+     for (const FileQueueEntry &f : *filesInQueue) {
+       inodeGroups[f.inode].push_back(f);
+     }
+     for (const auto &[inode, files] : inodeGroups) {
+       if (files.size() == 2) {
+         renamedCandidates[inode] = files;
+       }
+     }
+     for (const auto &[inode, files] : renamedCandidates) {
+       FileQueueEntry deleted{};
+       FileQueueEntry added{};
+       for (const auto &file : files) {
+         if (file.sync_status == syncStatusToString(SyncStatus::NEW))
+           added = file;
+         if (file.sync_status == syncStatusToString(SyncStatus::DELETE))
+           deleted = file;
+       }
+       if (!deleted.sync_status.empty() && !added.sync_status.empty() &&
+           deleted.hashvalue == added.hashvalue) {
+         FileQueueEntry q{added};
+         added.sync_status = syncStatusToString(SyncStatus::RENAME);
+         added.old_filename = deleted.filename;
+         m_dbManager.deleteFileQueue(deleted.path, deleted.filename);
+         m_dbManager.updateFileQueue(added);
+       }
+     }
+     */
+  /*  std::optional<std::vector<DirectoryQueueEntry>> qDirs{};
+  qDirs = m_dbManager.getAllQueueDirectories();
   std::vector<RenameInfo> renames = detectDirRenames(*qDirs);
   std::vector<RenameInfo> collapsed = collapseDirRenames(renames);
   reconcileDirRenamedCandidates(collapsed);
+  */
 }
 
 } // namespace sync_app

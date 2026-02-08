@@ -1,5 +1,6 @@
 #include "FileSystemScanner.hpp"
 #include "ThreadPool.hpp"
+#include "types.hpp"
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -115,19 +116,19 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
       return result;
 
     std::vector<FileTask> fileTasks;
-    std::unordered_map<std::string, std::string> inodesCache;
+    std::unordered_map<std::string, InodeCacheInfo> inodesCache;
 
     for (const auto &entry : fs::recursive_directory_iterator(path, opts)) {
       try {
         if (entry.is_regular_file()) {
           ScannedFile file;
-          file.absPath = entry.path().string();
+          file.absPath = entry.path().generic_string();
           file.path = toRelativePath(file.absPath);
-          file.filename = entry.path().filename().string();
+          file.filename = entry.path().filename().generic_string();
           file.size = entry.file_size();
           file.mtime = getUnixTimeStamp(fs::last_write_time(file.absPath));
           file.inode = getInode(file.absPath);
-          inodesCache[file.absPath] = file.inode;
+          inodesCache[file.absPath] = InodeCacheInfo({file.inode, false});
           std::string filePath{file.absPath};
           auto func = [this, filePath]() {
             return this->calculateHash(filePath);
@@ -138,11 +139,11 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
           fileTasks.push_back({file, std::move(future)});
         } else if (entry.is_directory()) {
           ScannedDirectory dir;
-          dir.absPath = entry.path().string();
+          dir.absPath = entry.path().generic_string();
           dir.path = toRelativePath(dir.absPath);
-          dir.name = entry.path().filename().string();
+          dir.name = entry.path().filename().generic_string();
           dir.inode = getInode(dir.absPath);
-          inodesCache[dir.absPath] = dir.inode;
+          inodesCache[dir.absPath] = InodeCacheInfo({dir.inode, true});
           dir.mtime = getUnixTimeStamp(fs::last_write_time(dir.absPath));
           result.directories.push_back(dir);
         }

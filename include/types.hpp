@@ -29,6 +29,11 @@ struct ScannedFile {
   int64_t mtime; // UTC timestamp
 };
 
+struct InodeCacheInfo {
+  std::string inode;
+  bool isDir;
+};
+
 struct ScannedDirectory {
   std::string path; // Relative path (e.g. "/foo")
   std::string name;
@@ -40,24 +45,24 @@ struct ScannedDirectory {
 struct ScanResult {
   std::vector<ScannedFile> files;
   std::vector<ScannedDirectory> directories;
-  std::unordered_map<std::string, std::string> inodesCache;
+  std::unordered_map<std::string, InodeCacheInfo> inodesCache;
 };
 
 struct FileMetadata {
-  std::string uuid;
-  std::string path;
-  std::string filename;
+  std::string uuid = "";
+  std::string path = "";
+  std::string filename = "";
   std::string last_modified; // Store as string for SQLite compatibility
-  std::string hashvalue;
-  int64_t size;
-  std::string dirID;
-  std::string inode;
-  std::string absPath;
-  int32_t versions;
-  std::string origin;
-  std::string lastSyncedHashValue;
-  std::optional<std::string> conflictId;
-  std::string lastSynced;
+  std::string hashvalue = "";
+  int64_t size = 0;
+  std::string dirID = "";
+  std::string inode = "";
+  std::string absPath = "";
+  int32_t versions = 1;
+  std::string origin = "";
+  std::string lastSyncedHashValue = "";
+  std::optional<std::string> conflictId = "";
+  std::string lastSynced = "";
 };
 
 struct DirectoryMetadata {
@@ -68,46 +73,40 @@ struct DirectoryMetadata {
   std::string created_at;
   std::string absPath;
   std::string inode;
-  std::string lastSynced;
+  std::string lastSynced = "";
 };
 
-struct FileQueueEntry : public FileMetadata {
+struct FileQueueEntry {
+  std::string uuid = "";
+  std::string path = "";
+  std::string filename = "";
+  std::string last_modified; // Store as string for SQLite compatibility
+  std::string hashvalue = "";
+  int64_t size = 0;
+  std::string dirID = "";
+  std::string inode = "";
+  std::string absPath = "";
+  int32_t versions = 1;
+  std::string origin = "";
+  std::string lastSyncedHashValue = "";
+
+  std::string lastSynced = "";
   std::string sync_status;
   std::optional<std::string> old_path;
   std::optional<std::string> old_filename;
-  // Shadowed fields to give unique memory pointer addresses for sqlite_orm
-  std::string uuid;
-  std::string path;
-  std::string dirID;
-  std::string filename;
-  std::string origin;
-
-  // Default constructor
-  FileQueueEntry() = default;
-
-  // Constructor from FileMetadata (ensure shadowed fields are copied)
-  FileQueueEntry(const FileMetadata &f)
-      : FileMetadata(f), uuid(f.uuid), path(f.path), dirID(f.dirID),
-        filename(f.filename), origin(f.origin) {}
 };
 
-struct DirectoryQueueEntry : public DirectoryMetadata {
+struct DirectoryQueueEntry {
+  std::string uuid;
+  std::string device;
+  std::string folder;
+  std::string path;
+  std::string created_at;
+  std::string absPath;
+  std::string inode;
+  std::string lastSynced;
   std::string sync_status;
   std::optional<std::string> old_path;
-
-  // Shadowed fields to give unique memory pointer addresses for sqlite_orm
-  std::string uuid;
-  std::string path;
-  std::string folder;
-  std::string device;
-  std::string inode;
-  // Default constructor
-  DirectoryQueueEntry() = default;
-
-  // Constructor from DirectoryMetadata (ensure shadowed fields are copied)
-  DirectoryQueueEntry(const DirectoryMetadata &d)
-      : DirectoryMetadata(d), uuid(d.uuid), path(d.path), device(d.device),
-        folder(d.folder), inode(d.inode) {}
 };
 
 struct CloudFileMetadata {
@@ -159,6 +158,21 @@ struct LocalFolderDeleteMetadata {
 struct LocalFileRenameMetadata {
   FileMetadata oldFile;
   CloudFileMetadata newFile;
+};
+
+struct OfflineFileMoveMetadata {
+  FileQueueEntry oldFile;
+  FileQueueEntry newFile;
+};
+
+struct OfflineDirMoveMetadata {
+  DirectoryQueueEntry oldFile;
+  DirectoryQueueEntry newFile;
+};
+
+struct LocalDirRenameMetadata {
+  DirectoryMetadata localDir;
+  CloudFolderMetadata cloudDir;
 };
 
 struct ReconciliationResult {
