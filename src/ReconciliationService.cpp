@@ -874,34 +874,6 @@ void ReconciliationService::reconcileLocalState(
                  std::back_inserter(movedDirs),
                  [&](const auto &pair) { return pair.second; });
 
-  std::map<std::string, std::vector<FileQueueEntry>> movedFilesPathMap;
-  std::map<std::string, std::vector<FileQueueEntry>> movedFilesOldPathMap;
-
-  for (auto &f : movedFiles) {
-    movedFilesPathMap[f.path].push_back(f);
-    movedFilesOldPathMap[*f.old_path].push_back(f);
-  }
-
-  movedFiles.clear();
-
-  for (auto &[path, d] : movedDirsMap) {
-    auto itNewPath = movedFilesPathMap.find(path);
-    if (itNewPath != movedFilesPathMap.end()) {
-      for (auto &f : itNewPath->second) {
-        if (d.old_path != *f.old_path) {
-          movedFiles.push_back(f);
-        }
-      }
-      movedFilesPathMap.erase(path);
-    }
-  }
-
-  for (auto &[path, files] : movedFilesPathMap) {
-    for (auto &f : files) {
-      movedFiles.push_back(f);
-    }
-  }
-
   bool isLocalDBUpdated = m_dbManager.reconcileLocalState(
       filesToAdd, filesToDelete, dirsToAdd, dirsToDelete, filesToModify,
       movedFiles, movedDirs);

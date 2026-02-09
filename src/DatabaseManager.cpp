@@ -800,13 +800,18 @@ bool DatabaseManager::reconcileLocalState(
       //***************************************************************************
       // 6. move/rename Dirs
       // TODO:
+      std::map<std::string, DirectoryQueueEntry> movedDirsMap;
+
       dirsInMain.reserve(dirsToMove.size());
+
       std::transform(dirsToMove.begin(), dirsToMove.end(),
                      std::back_inserter(dirsInMain), [&](const auto &dq) {
+                       movedDirsMap[dq.path] = dq;
                        return Utility::constructDirectoryMetadata(dq);
                      });
       m_impl->storage.replace_range(dirsInMain.begin(), dirsInMain.end());
       m_impl->storage.replace_range(dirsToMove.begin(), dirsToMove.end());
+
       dirsInQ.clear();
       dirsInMain.clear();
       // **************************************************************************
@@ -818,43 +823,121 @@ bool DatabaseManager::reconcileLocalState(
       dirsInQ.clear();
       dirsInQMap.clear();
       filesInMain.clear();
+      filesInQ.clear();
       filesInMain.reserve(filesToMove.size());
 
+      //*******************************************************************
+      // removing redundant fileQ entries which are already part of the dir
+      // moves
+      std::map<std::string, std::vector<FileQueueEntry>> movedFilesPathMap;
+      std::vector<FileQueueEntry> movedFiles;
+
+      for (auto &f : filesToMove) {
+        movedFilesPathMap[f.path].push_back(f);
+      }
+
+      for (auto &[path, d] : movedDirsMap) {
+        auto itNewPath = movedFilesPathMap.find(path);
+        if (itNewPath != movedFilesPathMap.end()) {
+          for (auto &f : itNewPath->second) {
+            if (d.old_path != *f.old_path) {
+              movedFiles.push_back(f);
+            }
+          }
+          movedFilesPathMap.erase(path);
+        }
+      }
+
+      for (auto &[path, files] : movedFilesPathMap) {
+        for (auto &f : files) {
+          movedFiles.push_back(f);
+        }
+      }
+
+      filesInQ.reserve(movedFiles.size());
+
+      //*********************************************************************
       // map the corresponding moved Files's dirs to be inserted into Queue
+
       std::transform(
           filesToMove.begin(), filesToMove.end(),
-          std::back_inserter(filesInMain), [&](const auto &fq) {
+          std::back_inserter(filesInMain), [&](const auto &f) {
+            FileQueueEntry fq{f};
+            auto it = dirsInMainMap.find(fq.path);
+            if (it == dirsInMainMap.end()) {
+              pathParts p = getFolderDevice(std::filesystem::path(fq.path));
+              auto dir = m_impl->storage.get_all<DirectoryMetadata>(
+                  where(c(&DirectoryMetadata::device) == p.device &&
+                        c(&DirectoryMetadata::folder) == p.folder &&
+                        c(&DirectoryMetadata::path) == fq.path));
+              if (!dir.empty()) {
+                dirsInMainMap[fq.path] = dir[0];
+                fq.dirID = dir[0].uuid;
+              } else {
+                DirectoryMetadata d =
+                    Utility::createDirectoryMetadata(fq.path, m_syncPath);
+                dirsInMainMap[fq.path] = d;
+                fq.dirID = d.uuid;
+              }
+            } else {
+              fq.dirID = it->second.uuid;
+            }
+            auto file = Utility::constructFileMetadata(fq);
+            return file;
+          });
+
+      // map filtered File Queue with their corresponding dirs to be inserted
+      // into queue
+      //
+      std::transform(
+          movedFiles.begin(), movedFiles.end(), std::back_inserter(filesInQ),
+          [&](const auto &f) {
+            FileQueueEntry fq{f};
             auto it = dirsInQMap.find(fq.path);
             if (it == dirsInQMap.end()) {
+              pathParts p = getFolderDevice(std::filesystem::path(fq.path));
               auto dir = m_impl->storage.get_all<DirectoryMetadata>(
-                  where(c(&DirectoryMetadata::uuid) == fq.dirID));
+                  where(c(&DirectoryMetadata::device) == p.device &&
+                        c(&DirectoryMetadata::folder) == p.folder &&
+                        c(&DirectoryMetadata::path) == fq.path));
               if (!dir.empty()) {
                 dirsInQMap[fq.path] = Utility::constructDirectoryQueueEntry(
                     dir[0], SyncStatus::FILE_LINKED);
+                fq.dirID = dir[0].uuid;
               } else {
                 DirectoryMetadata d{
                     Utility::createDirectoryMetadata(fq.path, m_syncPath)};
                 dirsInQMap[fq.path] = Utility::constructDirectoryQueueEntry(
                     d, SyncStatus::FILE_LINKED);
+                fq.dirID = dirsInQMap[fq.path].uuid;
               }
+            } else {
+              fq.dirID = it->second.uuid;
             }
-            return Utility::constructFileMetadata(fq);
+            return fq;
           });
+
+      dirsInQ.reserve(dirsInQMap.size());
+      dirsInMain.reserve(dirsInMainMap.size());
+
+      // extract dirs to be inserted into Queue from the map
       std::transform(dirsInQMap.begin(), dirsInQMap.end(),
                      std::back_inserter(dirsInQ),
                      [&](const auto &pair) { return pair.second; });
-      std::transform(dirsInQMap.begin(), dirsInQMap.end(),
-                     std::back_inserter(dirsInMain), [&](const auto &pair) {
-                       return Utility::constructDirectoryMetadata(pair.second);
-                     });
+
+      // extract the dirs to be inserted into main from the map
+      std::transform(dirsInMainMap.begin(), dirsInMainMap.end(),
+                     std::back_inserter(dirsInMain),
+                     [&](const auto &pair) { return pair.second; });
+
       m_impl->storage.replace_range<DirectoryMetadata>(dirsInMain.begin(),
                                                        dirsInMain.end());
       m_impl->storage.replace_range<FileMetadata>(filesInMain.begin(),
                                                   filesInMain.end());
       m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
                                                          dirsInQ.end());
-      m_impl->storage.replace_range<FileQueueEntry>(filesToMove.begin(),
-                                                    filesToMove.end());
+      m_impl->storage.replace_range<FileQueueEntry>(filesInQ.begin(),
+                                                    filesInQ.end());
       return true;
       //****************************************************************************
     });
