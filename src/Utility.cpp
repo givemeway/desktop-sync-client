@@ -1,11 +1,21 @@
 #include "Utility.hpp"
+#include "UuidUtils.hpp"
 #include "types.hpp"
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
+
+namespace fs = std::filesystem;
+
 namespace sync_app {
+
 FileQueueEntry Utility::constructFileQueueEntry(const FileMetadata &f,
                                                 SyncStatus status,
                                                 std::string &&old_path,
                                                 std::string &&old_filename) {
-
   FileQueueEntry fq;
   fq.filename = f.filename;
   fq.path = f.path;
@@ -71,5 +81,89 @@ Utility::constructDirectoryMetadata(const DirectoryQueueEntry &d) {
   dq.inode = d.inode;
   dq.lastSynced = d.lastSynced;
   return dq;
+}
+std::int64_t Utility::getUnixTimeStamp(const fs::file_time_type &ftime) {
+  auto now_file = fs::file_time_type::clock::now();
+  auto now_sys = std::chrono::system_clock::now();
+  auto file_duration = ftime - now_file;
+  auto sys_time =
+      now_sys + std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                    file_duration);
+  return std::chrono::duration_cast<std::chrono::seconds>(
+             sys_time.time_since_epoch())
+      .count();
+}
+
+std::string Utility::getInode(const std::string &absPath) {
+
+#ifdef _WIN32
+
+  HANDLE hFile = CreateFileW(
+      std::wstring(absPath.begin(), absPath.end())
+          .c_str(), // Basic conversion, assuming ASCII/UTF8 overlap for now
+      0,            // No access rights needed for attributes
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+
+  if (hFile == INVALID_HANDLE_VALUE)
+    return "";
+
+  BY_HANDLE_FILE_INFORMATION fileInfo;
+  std::string inodeStr = "";
+  if (GetFileInformationByHandle(hFile, &fileInfo)) {
+    inodeStr = std::to_string(fileInfo.nFileIndexHigh) + "-" +
+               std::to_string(fileInfo.nFileIndexLow);
+  }
+  CloseHandle(hFile);
+  return inodeStr;
+#else
+  struct stat st;
+  if (stat(absPath.c_str(), &st) == 0) {
+    return std::to_string(st.st_ino);
+  }
+  return "";
+#endif
+}
+pathParts Utility::getFolderDevice(const fs::path &path) {
+  pathParts parts{"/", "/"};
+  if (path.empty())
+    return parts;
+  parts.device = path.root_name().generic_string();
+  parts.folder = path.filename().generic_string();
+  if (parts.folder.empty())
+    parts.folder = "/";
+  auto root_dir = path.root_directory();
+  auto rel = path.relative_path();
+  if (!rel.empty()) {
+    auto first = rel.begin();
+    if (first != rel.end()) {
+      parts.device = first->string();
+    }
+  }
+  if (parts.device.empty()) {
+    parts.device = "/";
+  }
+  return parts;
+}
+DirectoryMetadata
+Utility::createDirectoryMetadata(const std::string &path,
+                                 const std::string &syncPath) {
+  DirectoryMetadata d;
+  pathParts p = getFolderDevice(fs::path(path));
+  d.device = p.device;
+  d.path = path;
+  d.folder = p.folder;
+  d.absPath = d.path == "/" ? syncPath : syncPath + d.path;
+  d.uuid = UuidUtils::generate();
+  try {
+    d.inode = getInode(d.absPath);
+    d.created_at =
+        std::to_string(getUnixTimeStamp(fs::last_write_time(d.absPath)));
+
+  } catch (const std::exception &) {
+    d.inode = "";
+    d.created_at = "";
+  }
+  return d;
 }
 } // namespace sync_app

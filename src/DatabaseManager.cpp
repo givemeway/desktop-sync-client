@@ -8,7 +8,6 @@
 #include <sqlite3.h>
 #include <sqlite_orm/sqlite_orm.h>
 using namespace sqlite_orm;
-
 namespace sync_app {
 
 // We define a helper function to create the storage.
@@ -797,14 +796,67 @@ bool DatabaseManager::reconcileLocalState(
                                                          dirsInQ.end());
 
       dirsInQ.clear();
+      dirsInMain.clear();
       //***************************************************************************
       // 6. move/rename Dirs
       // TODO:
+      dirsInMain.reserve(dirsToMove.size());
+      std::transform(dirsToMove.begin(), dirsToMove.end(),
+                     std::back_inserter(dirsInMain), [&](const auto &dq) {
+                       return Utility::constructDirectoryMetadata(dq);
+                     });
+      m_impl->storage.replace_range(dirsInMain.begin(), dirsInMain.end());
+      m_impl->storage.replace_range(dirsToMove.begin(), dirsToMove.end());
+      dirsInQ.clear();
+      dirsInMain.clear();
       // **************************************************************************
       // 7. move/rename files
+      //
       // TODO:
-      //****************************************************************************
+      dirsInMainMap.clear();
+      dirsInMain.clear();
+      dirsInQ.clear();
+      dirsInQMap.clear();
+      filesInMain.clear();
+      filesInMain.reserve(filesToMove.size());
+
+      // map the corresponding moved Files's dirs to be inserted into Queue
+      std::transform(
+          filesToMove.begin(), filesToMove.end(),
+          std::back_inserter(filesInMain), [&](const auto &fq) {
+            auto it = dirsInQMap.find(fq.path);
+            if (it == dirsInQMap.end()) {
+              auto dir = m_impl->storage.get_all<DirectoryMetadata>(
+                  where(c(&DirectoryMetadata::uuid) == fq.dirID));
+              if (!dir.empty()) {
+                dirsInQMap[fq.path] = Utility::constructDirectoryQueueEntry(
+                    dir[0], SyncStatus::FILE_LINKED);
+              } else {
+                DirectoryMetadata d{
+                    Utility::createDirectoryMetadata(fq.path, m_syncPath)};
+                dirsInQMap[fq.path] = Utility::constructDirectoryQueueEntry(
+                    d, SyncStatus::FILE_LINKED);
+              }
+            }
+            return Utility::constructFileMetadata(fq);
+          });
+      std::transform(dirsInQMap.begin(), dirsInQMap.end(),
+                     std::back_inserter(dirsInQ),
+                     [&](const auto &pair) { return pair.second; });
+      std::transform(dirsInQMap.begin(), dirsInQMap.end(),
+                     std::back_inserter(dirsInMain), [&](const auto &pair) {
+                       return Utility::constructDirectoryMetadata(pair.second);
+                     });
+      m_impl->storage.replace_range<DirectoryMetadata>(dirsInMain.begin(),
+                                                       dirsInMain.end());
+      m_impl->storage.replace_range<FileMetadata>(filesInMain.begin(),
+                                                  filesInMain.end());
+      m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
+                                                         dirsInQ.end());
+      m_impl->storage.replace_range<FileQueueEntry>(filesToMove.begin(),
+                                                    filesToMove.end());
       return true;
+      //****************************************************************************
     });
   } catch (const std::exception &e) {
     std::cerr << "[DB] exception : " << e.what() << std::endl;

@@ -1,7 +1,9 @@
 #pragma once
+#include "DatabaseManager.hpp"
 #include "types.hpp"
-
+#include <filesystem>
 namespace sync_app {
+
 class Utility {
 public:
   FileQueueEntry static constructFileQueueEntry(
@@ -13,6 +15,12 @@ public:
   FileMetadata static constructFileMetadata(const FileQueueEntry &fq);
   DirectoryMetadata static constructDirectoryMetadata(
       const DirectoryQueueEntry &dq);
+  std::int64_t static getUnixTimeStamp(
+      const std::filesystem::file_time_type &ftime);
+  std::string static getInode(const std::string &absPath);
+  DirectoryMetadata static createDirectoryMetadata(const std::string &path,
+                                                   const std::string &syncPath);
+  pathParts static getFolderDevice(const std::filesystem::path &path);
 };
 
 } // namespace sync_app
