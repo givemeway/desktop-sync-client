@@ -170,16 +170,16 @@ void SyncWorker::workerLoop() {
           [this, path = event.path]() { handleModified(path); });
       break;
     case WatchEvent::Moved:
-      std::cout << "[syncworker] Enqueueing Moved: " << event.path
-                << " oldPath: " << event.oldPath << std::endl;
+      std::cout << "[syncworker] Enqueueing MOVED: " << event.path
+                << " OLD: " << event.oldPath << std::endl;
       m_impl->m_threadPool.enqueue(
           [this, path = event.path, oldPath = event.oldPath]() {
             handleRenamed(path, oldPath, true);
           });
       break;
     case WatchEvent::Renamed:
-      std::cout << "[syncworker] Enqueueing Rename: " << event.path
-                << "oldPath: " << event.oldPath << std::endl;
+      std::cout << "[syncworker] Enqueueing RENAME: " << event.path
+                << " OLD: " << event.oldPath << std::endl;
       m_impl->m_threadPool.enqueue(
           [this, path = event.path, oldPath = event.oldPath]() {
             handleRenamed(path, oldPath);
@@ -559,8 +559,8 @@ void SyncWorker::handleRenamed(const std::string &path,
       bool isFolderMoved =
           m_impl->m_dbManager.moveDirectory(relPath, oldRelPath, dq);
       if (isFolderMoved) {
-        std::cout << "[syncworker] folder " << oldRelPath << " moved to=>"
-                  << relPath << std::endl;
+        std::cout << "[syncworker] " << oldRelPath << " MOVED TO =>" << relPath
+                  << std::endl;
         return;
       }
       std::cout << "[syncworker] move failed" << std::endl;

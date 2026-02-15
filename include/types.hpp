@@ -5,7 +5,6 @@
 #include <optional>
 #include <string>
 #include <vector>
-
 namespace sync_app {
 
 enum class SyncStatus {

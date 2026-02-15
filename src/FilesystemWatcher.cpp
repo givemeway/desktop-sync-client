@@ -1,4 +1,5 @@
 #include "FilesystemWatcher.hpp"
+#include "SyncTree.hpp"
 #include "types.hpp"
 #include <atomic>
 #include <chrono>
@@ -28,10 +29,12 @@ struct PendingEvent {
   std::chrono::steady_clock::time_point nextCheck;
   std::chrono::steady_clock::time_point deletedTime;
   SettleState state;
+  std::string path;
   std::string oldPath;
   bool isMoved = false;
   bool isAccesible = true;
   std::string cachedInode = "";
+  bool isProcessed = false;
 };
 
 struct RawEvent {
@@ -70,13 +73,19 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
 
   // Debouncing members
   std::map<std::string, PendingEvent> pendingEvents;
+  std::vector<PendingEvent> pendingEventsQ;
   std::mutex mtx;
+  std::mutex mtxInodeCache;
+  std::condition_variable cvInode;
   std::thread workerThread;
   std::condition_variable cv;
   std::atomic<bool> workerRunning{false};
   std::atomic<int> pendingCount{0};
+  std::atomic<bool> cacheUpdated{false};
   std::map<std::string, DeletedItem> deletedItems;
   std::unordered_map<std::string, InodeCacheInfo> &m_inodesCache;
+  SyncTree &m_syncTree;
+
   FilesystemWatcher::Callback callback;
 
   // buffer to store the incoming event
@@ -87,8 +96,8 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
   std::chrono::milliseconds settleTime{2000};
 
   Impl(std::unordered_map<std::string, InodeCacheInfo> &inodesCache,
-       FilesystemWatcher::Callback callback)
-      : m_inodesCache(inodesCache), callback(callback) {}
+       SyncTree &syncTree, FilesystemWatcher::Callback callback)
+      : m_inodesCache(inodesCache), m_syncTree(syncTree), callback(callback) {}
   ~Impl() = default;
 
   std::string getInode(const std::string &absPath) {
@@ -138,7 +147,7 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
 
       auto now = std::chrono::steady_clock::now();
 
-      for (auto raw : localQueue) {
+      for (auto &raw : localQueue) {
         bool isModifiedEvent = raw.type == WatchEvent::Modified;
         auto it = pendingEvents.find(raw.path);
         bool pathExists = it != pendingEvents.end();
@@ -160,9 +169,11 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
         } catch (const std::exception &e) {
           isAccessible = false;
         }
-        pendingEvents[path] =
+        auto event =
             PendingEvent({eventType, mtime, nextCheck, deletedTime, fileState,
-                          oldPath, isMoved, isAccessible, ""});
+                          path, oldPath, isMoved, isAccessible, ""});
+        pendingEvents[path] = event;
+        pendingEventsQ.push_back(event);
       }
 
       {
@@ -170,9 +181,13 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
         localQueue.clear();
       }
 
-      for (auto it = pendingEvents.begin(); it != pendingEvents.end();) {
-        const std::string path = it->first;
-        auto &ev = it->second;
+      for (auto it = pendingEventsQ.begin(); it != pendingEventsQ.end();) {
+        const std::string path = it->path;
+        auto &ev = *it;
+        if (ev.isProcessed) {
+          it = pendingEventsQ.erase(it);
+          continue;
+        }
         if (ev.type == WatchEvent::Renamed) {
           std::string inode = "";
           bool isDir = false;
@@ -181,11 +196,13 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
             isDir = fs::is_directory(path);
           } catch (...) {
           }
-          m_inodesCache.erase(ev.oldPath);
-          m_inodesCache[path] = InodeCacheInfo({inode, isDir});
+          //          m_inodesCache.erase(ev.oldPath);
+          //         m_inodesCache[path] = InodeCacheInfo({inode, isDir});
           if (callback)
             callback(path, ev.oldPath, WatchEvent::Renamed);
-          it = pendingEvents.erase(it);
+          m_syncTree.renamePath(path, ev.oldPath);
+          it = pendingEventsQ.erase(it);
+          pendingEvents.erase(path);
           continue;
         }
 
@@ -195,13 +212,19 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
         }
 
         if (ev.type == WatchEvent::Deleted) {
-          auto cacheIt = m_inodesCache.find(path);
-          if (cacheIt != m_inodesCache.end()) {
+          //          auto cacheIt = m_inodesCache.find(path);
+          auto current = m_syncTree.findByPath(path);
+          //          std::cout << "[watcher] path=> " << path << std::endl;
+          //         if(cacheIt != m_inodesCache.end());
+          if (current) {
             // found the deleted file in cache.
-            std::string inode = cacheIt->second.inode;
+            //            std::string inode = cacheIt->second.inode;
+            std::string inode = current->inode;
             auto delIt = deletedItems.find(inode);
-            bool isDir = cacheIt->second.isDir;
+            //            bool isDir = cacheIt->second.isDir;
+            bool isDir = current->isDir;
             if (delIt == deletedItems.end()) {
+              auto deletedTime = std::chrono::steady_clock::now();
               deletedItems[inode] = {inode, path, now, isDir};
               ev.deletedTime = now;
               ev.nextCheck = now + pollInterval;
@@ -213,11 +236,18 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
                       now - delIt->second.time);
               bool isDir = delIt->second.isDir;
               if (isDir && elapsed >= pollInterval) {
+                std::cout << "[watcher] isDir: " << isDir
+                          << " sending delete event ->"
+                          << " elapsed: " << elapsed << std::endl;
                 if (callback)
                   callback(path, "", WatchEvent::Deleted);
-                m_inodesCache.erase(path);
+                // wait for delete event to be handled before proceeding
+                // further
+                // m_inodesCache.erase(path);
+                m_syncTree.deletePath(path);
                 deletedItems.erase(inode);
-                it = pendingEvents.erase(it);
+                it = pendingEventsQ.erase(it);
+                pendingEvents.erase(path);
                 continue;
               }
               if (isDir && elapsed <= pollInterval) {
@@ -226,12 +256,17 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
                 continue;
               }
               if (!isDir && elapsed >= settleTime) {
+                std::cout << "[watcher] isDir: " << isDir
+                          << " elapsed: " << elapsed
+                          << " sending delete event ->" << path << std::endl;
                 if (callback) {
                   callback(path, "", WatchEvent::Deleted);
                 }
-                m_inodesCache.erase(path);
+                //                m_inodesCache.erase(path);
+                m_syncTree.deletePath(path);
                 deletedItems.erase(inode);
-                it = pendingEvents.erase(it);
+                it = pendingEventsQ.erase(it);
+                pendingEvents.erase(path);
                 continue;
               }
               if (!isDir && elapsed <= settleTime) {
@@ -241,11 +276,16 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
               }
             }
           } else {
+            std::cout << "[watcher] path=> " << path
+                      << " not found in syncTree."
+                      << " Sending DELETE event" << std::endl;
             if (callback) {
               callback(path, "", WatchEvent::Deleted);
             }
-            m_inodesCache.erase(path);
-            it = pendingEvents.erase(it);
+            //            m_inodesCache.erase(path);
+            m_syncTree.deletePath(path);
+            it = pendingEventsQ.erase(it);
+            pendingEvents.erase(path);
             continue;
           }
         }
@@ -254,7 +294,8 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
                  ev.type == WatchEvent::Modified) {
           try {
             if (!fs::exists(path)) {
-              it = pendingEvents.erase(it);
+              it = pendingEventsQ.erase(it);
+              pendingEvents.erase(path);
               continue;
             }
             bool isDir = fs::is_directory(path);
@@ -262,27 +303,35 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
               ev.cachedInode = getInode(path);
             auto inode = ev.cachedInode;
             if (isDir && ev.type == WatchEvent::Modified) {
-              it = pendingEvents.erase(it);
+              it = pendingEventsQ.erase(it);
+              pendingEvents.erase(path);
               continue;
             }
             auto delIt = deletedItems.find(inode);
             if (isDir) {
               // folder add event
-              m_inodesCache[path] = InodeCacheInfo({inode, true});
+              // m_inodesCache[path] = InodeCacheInfo({inode, true});
               if (delIt != deletedItems.end()) {
                 // folder move detected dispatch moved event
                 std::string oldPath = delIt->second.path;
                 if (callback)
                   callback(path, oldPath, WatchEvent::Moved);
-                m_inodesCache.erase(oldPath);
+                // m_inodesCache.erase(oldPath);
+                m_syncTree.movePath(path, oldPath);
                 deletedItems.erase(inode);
+                for (int i = 0; i < pendingEventsQ.size(); ++i) {
+                  if (pendingEventsQ[i].path == oldPath)
+                    pendingEventsQ[i].isProcessed = true;
+                }
                 pendingEvents.erase(oldPath);
               } else {
                 // its a new event. dispatch add event
                 if (callback)
                   callback(path, "", WatchEvent::Added);
+                m_syncTree.insertPath(path, inode, true);
               }
-              it = pendingEvents.erase(it);
+              it = pendingEventsQ.erase(it);
+              pendingEvents.erase(path);
               continue;
             }
             // file add or modified event
@@ -295,35 +344,43 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
 
             auto currentMTime = fs::last_write_time(path);
 
-            if (currentMTime != it->second.lastMTime) {
+            if (currentMTime != it->lastMTime) {
               // File is changing! Reset to polling state
               ev.lastMTime = currentMTime;
               ev.nextCheck = now + pollInterval;
               ev.state = SettleState::Polling;
               ++it;
               continue;
-            } else if (it->second.state == SettleState::Polling) {
+            } else if (it->state == SettleState::Polling) {
               // MTime is stable for 'pollInterval', move to 'settleTime'
               ev.state = SettleState::Settling;
               ev.nextCheck = now + settleTime;
               ++it;
               continue;
-            } else if (it->second.state == SettleState::Settling) {
+            } else if (it->state == SettleState::Settling) {
               // MTime has been stable for full 'settleTime'.
               // Final Check: Is it locked by another process?
               if (isFileAccessible(path)) {
-                m_inodesCache[path] = InodeCacheInfo({inode, false});
+                //                m_inodesCache[path] = InodeCacheInfo({inode,
+                //                false});
                 if (ev.isMoved) {
                   if (callback)
                     callback(path, ev.oldPath, WatchEvent::Moved);
-                  m_inodesCache.erase(ev.oldPath);
-                  pendingEvents.erase(ev.oldPath);
+                  // m_inodesCache.erase(ev.oldPath);
+                  m_syncTree.movePath(path, ev.oldPath);
                   deletedItems.erase(inode);
+                  pendingEvents.erase(ev.oldPath);
+                  for (int i = 0; i < pendingEventsQ.size(); ++i) {
+                    if (pendingEventsQ[i].path == ev.oldPath)
+                      pendingEventsQ[i].isProcessed = true;
+                  }
                 } else {
                   if (callback)
                     callback(path, "", ev.type);
+                  m_syncTree.insertPath(path, inode, false);
                 }
-                it = pendingEvents.erase(it);
+                it = pendingEventsQ.erase(it);
+                pendingEvents.erase(path);
                 continue;
               } else {
                 // Still locked! Stay in Settling state and check again soon
@@ -334,7 +391,7 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
             }
           } catch (const fs::filesystem_error &e) {
             // Errors like permission denied while checking mtime
-            it->second.nextCheck = now + pollInterval;
+            it->nextCheck = now + pollInterval;
             ++it;
           }
         }
@@ -432,9 +489,9 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
 FilesystemWatcher::FilesystemWatcher(
     const std::string &path,
     std::unordered_map<std::string, InodeCacheInfo> &inodesCache,
-    Callback callback)
-    : m_path(path), m_inodesCache(inodesCache), m_callback(callback),
-      m_impl(std::make_unique<Impl>(inodesCache, callback)) {}
+    SyncTree &syncTree, Callback callback)
+    : m_path(path),
+      m_impl(std::make_unique<Impl>(inodesCache, syncTree, callback)) {}
 FilesystemWatcher::~FilesystemWatcher() { stop(); }
 
 void FilesystemWatcher::start() {

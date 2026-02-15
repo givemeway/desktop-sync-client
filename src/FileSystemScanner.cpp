@@ -1,4 +1,5 @@
 #include "FileSystemScanner.hpp"
+#include "SyncTree.hpp"
 #include "ThreadPool.hpp"
 #include "types.hpp"
 #include <algorithm>
@@ -27,8 +28,8 @@ struct FileTask {
 };
 
 FileSystemScanner::FileSystemScanner(ThreadPool &threadPool,
-                                     std::string syncPath)
-    : m_syncPath(syncPath), m_threadPool(threadPool) {}
+                                     std::string syncPath, SyncTree &syncTree)
+    : m_syncPath(syncPath), m_threadPool(threadPool), m_syncTree(syncTree) {}
 
 FileSystemScanner::~FileSystemScanner() = default;
 
@@ -129,6 +130,9 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
           file.mtime = getUnixTimeStamp(fs::last_write_time(file.absPath));
           file.inode = getInode(file.absPath);
           inodesCache[file.absPath] = InodeCacheInfo({file.inode, false});
+          std::string path = file.path == "/" ? "/" + file.filename
+                                              : file.path + "/" + file.filename;
+          m_syncTree.insertPath(file.absPath, file.inode, false);
           std::string filePath{file.absPath};
           auto func = [this, filePath]() {
             return this->calculateHash(filePath);
@@ -144,6 +148,7 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
           dir.name = entry.path().filename().generic_string();
           dir.inode = getInode(dir.absPath);
           inodesCache[dir.absPath] = InodeCacheInfo({dir.inode, true});
+          m_syncTree.insertPath(dir.absPath, dir.inode, true);
           dir.mtime = getUnixTimeStamp(fs::last_write_time(dir.absPath));
           result.directories.push_back(dir);
         }

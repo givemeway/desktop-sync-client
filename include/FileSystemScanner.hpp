@@ -6,9 +6,11 @@
 #include <string>
 namespace sync_app {
 class ThreadPool;
+class SyncTree;
 class FileSystemScanner {
 public:
-  FileSystemScanner(ThreadPool &threadPool, std::string syncPath);
+  FileSystemScanner(ThreadPool &threadPool, std::string syncPath,
+                    SyncTree &syncTree);
   ~FileSystemScanner();
 
   ScanResult scanSyncPath(std::string path);
@@ -21,6 +23,7 @@ public:
 private:
   std::string m_syncPath;
   ThreadPool &m_threadPool;
+  SyncTree &m_syncTree;
 };
 
 } // namespace sync_app

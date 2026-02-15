@@ -7,6 +7,7 @@
 #include <mutex>
 #include <sqlite3.h>
 #include <sqlite_orm/sqlite_orm.h>
+#include <sstream>
 using namespace sqlite_orm;
 namespace sync_app {
 
@@ -853,8 +854,12 @@ bool DatabaseManager::reconcileLocalState(
           movedFiles.push_back(f);
         }
       }
-
+      movedFilesPathMap.clear();
       filesInQ.reserve(movedFiles.size());
+
+      for (auto &f : movedFiles) {
+        movedFilesPathMap[f.path].push_back(f);
+      }
 
       //*********************************************************************
       // map the corresponding moved Files's dirs to be inserted into Queue
@@ -924,6 +929,29 @@ bool DatabaseManager::reconcileLocalState(
       std::transform(dirsInQMap.begin(), dirsInQMap.end(),
                      std::back_inserter(dirsInQ),
                      [&](const auto &pair) { return pair.second; });
+
+      // sort by the path depth
+      std::sort(
+          dirsInQ.begin(), dirsInQ.end(),
+          [&](const DirectoryQueueEntry &a, const DirectoryQueueEntry &b) {
+            std::stringstream ss_a{a.path};
+            std::string token_a;
+            std::vector<std::string> segments_a;
+            while (std::getline(ss_a, token_a, '/')) {
+              if (!token_a.empty())
+                segments_a.push_back(token_a);
+            }
+            std::stringstream ss_b{a.path};
+            std::string token_b;
+            std::vector<std::string> segments_b;
+            while (std::getline(ss_b, token_b, '/')) {
+              if (!token_b.empty())
+                segments_b.push_back(token_b);
+            }
+            return segments_a.size() < segments_b.size();
+          });
+
+      std::string minPath = "/";
 
       // extract the dirs to be inserted into main from the map
       std::transform(dirsInMainMap.begin(), dirsInMainMap.end(),

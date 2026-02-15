@@ -4,6 +4,7 @@
 #include "FileSystemScanner.hpp"
 #include "FilesystemWatcher.hpp"
 #include "ReconciliationService.hpp"
+#include "SyncTree.hpp"
 #include "SyncWorker.hpp"
 #include "ThreadPool.hpp"
 #include <atomic>
@@ -61,8 +62,9 @@ int main() {
     sync_app::ThreadPool hashPool(4);
     sync_app::ThreadPool uploadPool(4);
     sync_app::ThreadPool downloadPool(4);
+    sync_app::SyncTree syncTree(syncFolder);
     sync_app::ApiClient apiClient(apiBaseUrl, userEmail);
-    sync_app::FileSystemScanner scanner(hashPool, syncFolder);
+    sync_app::FileSystemScanner scanner(hashPool, syncFolder, syncTree);
     sync_app::ReconciliationService reconciliationService(dbManager, scanner,
                                                           hashPool, syncFolder);
     sync_app::SyncWorker syncworker(dbManager, scanner, hashPool, syncFolder);
@@ -81,13 +83,13 @@ int main() {
     std::cout
         << "[Main] Initial filesystem scan and local reconciliation complete."
         << std::endl;
-
+    syncTree.print();
     // 3. Initialize SyncWorker Background Thread
     syncworker.start();
 
     // 4. Initialize Watcher
     sync_app::FilesystemWatcher watcher(
-        syncFolder, scanResult.inodesCache,
+        syncFolder, scanResult.inodesCache, syncTree,
         [&syncworker](const std::string &path, const std::string &oldPath,
                       sync_app::WatchEvent event) {
           syncworker.enqueueEvent(event, path, oldPath);

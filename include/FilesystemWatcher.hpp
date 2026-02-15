@@ -12,7 +12,7 @@ namespace sync_app {
  * FilesystemEvent represents a change in the filesystem.
  */
 enum class WatchEvent { Added, Modified, Deleted, Moved, Renamed };
-
+class SyncTree;
 /**
  * FilesystemWatcher monitors a directory for changes.
  */
@@ -24,7 +24,7 @@ public:
   FilesystemWatcher(
       const std::string &path,
       std::unordered_map<std::string, InodeCacheInfo> &inodesCache,
-      Callback callback);
+      SyncTree &syncTree, Callback callback);
   ~FilesystemWatcher();
 
   void start();
@@ -34,8 +34,8 @@ private:
   struct Impl;
   std::unique_ptr<Impl> m_impl;
   std::string m_path;
-  std::unordered_map<std::string, InodeCacheInfo> m_inodesCache;
-  Callback m_callback;
+  // std::unordered_map<std::string, InodeCacheInfo> m_inodesCache;
+  // Callback m_callback;
 };
 
 } // namespace sync_app

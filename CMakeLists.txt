@@ -44,6 +44,7 @@ add_executable(sync_client
     src/SyncWorker.cpp
     src/CloudSyncWorker.cpp
     src/Utility.cpp
+    src/SyncTree.cpp
   )
 
 # Find libmagic from vcpkg
