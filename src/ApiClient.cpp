@@ -187,6 +187,11 @@ bool ApiClient::downloadFile(const CloudFileMetadata &file,
       query.c_str(),
       [&mtime](const httplib::Response &response) {
         if (response.status != 200) {
+          if (response.status == 404) {
+            std::cerr << "[API] file not found in cloud. Status Code: "
+                      << response.status << std::endl;
+            return true;
+          }
           std::cerr << "[API] Response failed. Status Code: " << response.status
                     << "\n";
           return false;

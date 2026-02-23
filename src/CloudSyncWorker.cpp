@@ -50,7 +50,8 @@ bool CloudSyncWorker::pollCloudToSyncToLocal() {
         m_reconcile.reconcile(files, folders, *dbFiles, *dbDirs);
     auto filesToDownload = reconciledItems.filesToDownload;
     auto filesToDeleteLocal = reconciledItems.filesToDeleteLocal;
-    auto filesToRename = reconciledItems.filesToRename;
+    auto filesToMove = reconciledItems.filesToMove;
+    auto dirsToMove = reconciledItems.dirsToMove;
     auto foldersToCreateLocal = reconciledItems.foldersToCreateLocal;
     auto foldersToDeleteLocal = reconciledItems.foldersToDeleteLocal;
     auto filesToUpdate = reconciledItems.filesToUpdate;
@@ -63,8 +64,9 @@ bool CloudSyncWorker::pollCloudToSyncToLocal() {
               << foldersToCreateLocal.size() << "\n";
     std::cout << "[cloudsyncworker] foldersToDeleteLocal: "
               << foldersToDeleteLocal.size() << "\n";
-    std::cout << "[cloudsyncworker] processFilesToRename: "
-              << filesToRename.size() << "\n";
+    std::cout << "[cloudsyncworker] FilesToMove: " << filesToMove.size()
+              << "\n";
+    std::cout << "[cloudsyncworker] DirsToMove: " << dirsToMove.size() << "\n";
     std::cout << "[cloudsyncworker] filesInConflict: " << filesInConflict.size()
               << "\n";
     std::cout << "[cloudsyncworker] filesToUpdate: " << filesToUpdate.size()
@@ -73,7 +75,7 @@ bool CloudSyncWorker::pollCloudToSyncToLocal() {
     processFilesToDelete(filesToDeleteLocal);
     processFoldersToCreate(foldersToCreateLocal);
     processFoldersToDelete(foldersToDeleteLocal);
-    processFilesToRename(filesToRename);
+    processFilesToMove(filesToMove);
     processFilesInConflict(filesInConflict);
     processFilesToUpdate(filesToUpdate);
     return true;
@@ -183,6 +185,8 @@ CloudSyncWorker::getDirectoryMetadata(const std::string &path,
 void CloudSyncWorker::processFilesToDownload(
     const std::vector<CloudFileMetadata> &filesToDownload) {
   int count = 0;
+  m_tasksPending = filesToDownload.size();
+  std::cout << "[cloudsyncworker] total TASKS: " << m_tasksPending << std::endl;
   std::vector<std::future<bool>> fileDownloadTasks;
   for (const auto &file : filesToDownload) {
     count++;
@@ -190,9 +194,6 @@ void CloudSyncWorker::processFilesToDownload(
     auto clientPtr = m_apiClient.clone();
     auto downloadFunc = [this, count, file,
                          client = std::move(clientPtr)]() mutable {
-      std::cout << "[cloudsyncworker] [" << count
-                << "] Processing download for: " << file.filename << "\n";
-
       std::string fileAbsPath(
           file.path == "/" ? m_syncPath + "/" + file.filename
                            : m_syncPath + file.path + "/" + file.filename);
@@ -222,6 +223,12 @@ void CloudSyncWorker::processFilesToDownload(
           if (!fs::exists(fp)) {
             m_syncWorker.removeIgnoreEvent(fp, WatchEvent::Added);
           }
+        }
+        --m_tasksPending;
+        std::cout << "[cloudsyncworker] tasks: " << m_tasksPending << std::endl;
+        if (m_tasksPending == 0) {
+          std::cout << "[cloudsyncworker] LAST TASK PROCESSED: " << std::endl;
+          m_tasksCV.notify_all();
         }
         return false;
       }
@@ -266,13 +273,28 @@ void CloudSyncWorker::processFilesToDownload(
               m_dbManager.getSyncMutex());
           fileUpdateStatus = m_dbManager.insertFileWithDirectory(f, dirs);
         }
-        if (fileUpdateStatus)
+        if (fileUpdateStatus) {
+          --m_tasksPending;
+          std::cout << "[cloudsyncworker] tasks: " << m_tasksPending
+                    << std::endl;
+          if (m_tasksPending == 0) {
+            std::cout << "[cloudsyncworker] LAST TASK PROCESSED: " << std::endl;
+            m_tasksCV.notify_all();
+          }
           return true;
-        else
+        } else {
+          --m_tasksPending;
+          std::cout << "[cloudsyncworker] tasks: " << m_tasksPending
+                    << std::endl;
+          if (m_tasksPending == 0) {
+            std::cout << "[cloudsyncworker] LAST TASK PROCESSED: " << std::endl;
+            m_tasksCV.notify_all();
+          }
           return false;
+        }
       } else {
         std::cout << "[cloudsyncworker] download failed.. deleting.."
-                  << fileAbsPath << "\n";
+                  << fileAbsPath << std::endl;
         if (fs::exists(fileAbsPath)) {
           try {
             m_syncWorker.addIgnoreEvent(fileAbsPath, WatchEvent::Deleted);
@@ -283,15 +305,22 @@ void CloudSyncWorker::processFilesToDownload(
                       << "\n";
           }
         }
+        --m_tasksPending;
+        std::cout << "[cloudsyncworker] tasks: " << m_tasksPending << std::endl;
+        if (m_tasksPending == 0) {
+          std::cout << "[cloudsyncworker] LAST TASK PROCESSED: " << std::endl;
+          m_tasksCV.notify_all();
+        }
         return false;
       }
     };
     auto future = m_downloadThreadPool.enqueue(std::move(downloadFunc));
     fileDownloadTasks.emplace_back(std::move(future));
   }
-  for (auto &task : fileDownloadTasks) {
+  /*for (auto &task : fileDownloadTasks) {
     task.get();
   }
+  */
 }
 
 void CloudSyncWorker::processFilesToDelete(
@@ -399,18 +428,24 @@ void CloudSyncWorker::processFoldersToDelete(
     }
   }
 }
+void CloudSyncWorker::processDirsToMove(
+    const std::vector<DirectoryQueueEntry> &filesToRename) {}
 
-void CloudSyncWorker::processFilesToRename(
-    const std::vector<LocalFileRenameMetadata> &filesToRename) {
+void CloudSyncWorker::processFilesToMove(
+    const std::vector<FileQueueEntry> &filesToRename) {
   for (auto &file : filesToRename) {
-    FileMetadata of(file.oldFile);
-    CloudFileMetadata nf(file.newFile);
-    std::string oldRelPath(of.path);
-    std::string newRelPath(nf.path);
-    std::string oldAbsPath(of.absPath);
-    std::string newAbsPath;
-    newAbsPath = nf.path == "/" ? m_syncPath + "/" + nf.filename
-                                : m_syncPath + nf.path + "/" + nf.filename;
+
+    std::string oldRelPath{*file.old_path};
+    std::string newRelPath{file.path};
+    std::string oldAbsPath{file.old_path == "/"
+                               ? m_syncPath + "/" + *file.old_filename
+                               : m_syncPath + *file.old_path + "/" +
+                                     *file.old_filename};
+    std::string newAbsPath{file.absPath};
+
+    newAbsPath = file.path == "/"
+                     ? m_syncPath + "/" + file.filename
+                     : m_syncPath + file.path + "/" + file.filename;
     try {
       if (fs::exists(oldAbsPath)) {
         m_syncWorker.addIgnoreEvent(newAbsPath, WatchEvent::Moved);
@@ -418,27 +453,19 @@ void CloudSyncWorker::processFilesToRename(
         fs::rename(oldAbsPath, newAbsPath);
       }
     } catch (const std::exception &e) {
-      std::cerr << "[cloudsyncworker] unable to rename from ->" << of.filename
-                << " to->" << nf.filename << "\n";
+      std::cerr << "[cloudsyncworker] unable to rename from ->"
+                << *file.old_filename << " to->" << file.filename << "\n";
       m_syncWorker.removeIgnoreEvent(newAbsPath, WatchEvent::Moved);
       m_syncWorker.removeIgnoreEvent(newAbsPath, WatchEvent::Moved);
       continue;
     }
-    std::string path = of.path;
-    std::string filename = of.filename;
-    of.filename = nf.filename;
-    of.path = nf.path;
-    of.absPath = nf.path == "/" ? m_syncPath + "/" + nf.filename
-                                : m_syncPath + nf.path + "/" + nf.filename;
-    of.hashvalue = nf.hashvalue;
-    of.lastSyncedHashValue = nf.lastSyncedHashValue;
-    of.versions = nf.versions;
-    of.last_modified = nf.last_modified;
-    of.dirID = nf.dirID;
+    std::string path = *file.old_path;
+    std::string filename = *file.old_filename;
+    FileMetadata f(Utility::convert<FileMetadata>(file));
     bool result = false;
     {
       std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
-      result = m_dbManager.updateFileWithTransaction(of, path, filename);
+      result = m_dbManager.updateFileWithTransaction(f, path, filename);
     }
     if (!result) {
       try {
@@ -697,7 +724,7 @@ void CloudSyncWorker::processQueueToSyncUp() {
         if (!isRenamed) {
           // retry;
           std::cout << "[cloudsyncworker] Error renaming -> " << *dq.old_path
-                    << " => " << dq.path << "in cloud" << "\n";
+                    << " => " << dq.path << " in cloud" << "\n";
           continue;
         }
         {
@@ -902,7 +929,11 @@ void CloudSyncWorker::runSyncDown() {
     }
     */
   while (!m_stopThread) {
-    //   pollCloudToSyncToLocal();
+    std::cout << "[cloudsyncworker] processing CLOUD queue..." << std::endl;
+    pollCloudToSyncToLocal();
+    std::unique_lock<std::mutex> lock(m_tasksPendingMutex);
+    m_tasksCV.wait(lock,
+                   [this] { return m_tasksPending == 0 || m_stopThread; });
     for (int i = 0; i < 10 && !m_stopThread; ++i) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
@@ -916,7 +947,8 @@ void CloudSyncWorker::runSyncDown() {
 
 void CloudSyncWorker::runSyncUp() {
   while (!m_stopThread) {
-    //    processQueueToSyncUp();
+    std::cout << "[cloudsyncworker] processing LOCAL queue..." << std::endl;
+    processQueueToSyncUp();
     for (int i = 0; i < 10 && !m_stopThread; ++i) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }

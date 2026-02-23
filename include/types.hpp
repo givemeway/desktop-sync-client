@@ -88,11 +88,12 @@ struct FileQueueEntry {
   int32_t versions = 1;
   std::string origin = "";
   std::string lastSyncedHashValue = "";
-
   std::string lastSynced = "";
+
   std::string sync_status;
   std::optional<std::string> old_path;
   std::optional<std::string> old_filename;
+  std::optional<std::map<std::string, std::string>> dirIDs;
 };
 
 struct DirectoryQueueEntry {
@@ -106,6 +107,7 @@ struct DirectoryQueueEntry {
   std::string lastSynced;
   std::string sync_status;
   std::optional<std::string> old_path;
+  std::optional<std::map<std::string, std::string>> dirIDs;
 };
 
 struct CloudFileMetadata {
@@ -121,6 +123,7 @@ struct CloudFileMetadata {
   int32_t versions;
   std::optional<std::string> conflictId;
   std::optional<std::map<std::string, std::string>> dirIDs;
+  std::optional<std::string> last_updated;
 };
 
 struct CloudFolderMetadata {
@@ -151,6 +154,9 @@ struct LocalFolderCreateMetadata {
 struct LocalFolderDeleteMetadata {
   std::string absPath;
   std::string path;
+  std::string uuid;
+  std::string device;
+  std::string created_at;
   std::string folder;
 };
 
@@ -174,6 +180,16 @@ struct LocalDirRenameMetadata {
   CloudFolderMetadata cloudDir;
 };
 
+struct OfflineReconResult {
+
+  std::vector<FileMetadata> filesToDownload;
+  std::vector<FileQueueEntry> filesToDeleteLocal;
+  std::vector<DirectoryMetadata> foldersToCreateLocal;
+  std::vector<DirectoryQueueEntry> foldersToDeleteLocal;
+  std::vector<FileQueueEntry> filesToMove;
+  std::vector<DirectoryQueueEntry> dirsToMove;
+};
+
 struct ReconciliationResult {
   std::vector<CloudFileMetadata> filesToDownload;
   std::vector<FileMetadata> filesToDeleteLocal;
@@ -182,7 +198,8 @@ struct ReconciliationResult {
   std::vector<CloudFileMetadata> filesInConflict;
   std::vector<CloudFileMetadata> filesToUpdate;
   std::vector<LocalFileRenameMetadata> filesToRename;
-  std::vector<LocalFileRenameMetadata> filesToMove;
+  std::vector<FileQueueEntry> filesToMove;
+  std::vector<DirectoryQueueEntry> dirsToMove;
 };
 
 struct FileUploadMetadata {
@@ -197,6 +214,7 @@ inline void from_json(const nlohmann::json &j, CloudFileMetadata &f) {
   f.path = j.value("path", "/");
   f.filename = j.value("filename", "");
   f.last_modified = j.value("last_modified", "");
+  f.last_updated = j.value("last_updated", "");
   f.hashvalue = j.value("hashvalue", "");
   f.lastSyncedHashValue = f.hashvalue;
   f.size = j.value("size", 0LL);

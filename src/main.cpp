@@ -83,7 +83,7 @@ int main() {
     std::cout
         << "[Main] Initial filesystem scan and local reconciliation complete."
         << std::endl;
-    syncTree.print();
+    //    syncTree.print();
     // 3. Initialize SyncWorker Background Thread
     syncworker.start();
 

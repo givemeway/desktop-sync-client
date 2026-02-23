@@ -42,6 +42,9 @@ private:
   std::mutex m_syncDownMutex;
   std::mutex m_syncUpMutex;
   std::condition_variable m_syncCV;
+  std::atomic<int> m_tasksPending = 0;
+  std::condition_variable m_tasksCV;
+  std::mutex m_tasksPendingMutex;
 
   bool pollCloudToSyncToLocal();
   void runSyncDown();
@@ -68,8 +71,10 @@ private:
 
   void processFoldersToDelete(
       const std::vector<LocalFolderDeleteMetadata> &foldersToDeleteLocal);
-  void processFilesToRename(
-      const std::vector<LocalFileRenameMetadata> &filesToRename);
+
+  void processFilesToMove(const std::vector<FileQueueEntry> &filesToMove);
+
+  void processDirsToMove(const std::vector<DirectoryQueueEntry> &dirsToMove);
 
   void
   processFilesInConflict(const std::vector<CloudFileMetadata> &filesInConflict);

@@ -140,7 +140,7 @@ ReconciliationResult ReconciliationService::reconcile(
   std::cout << "[Reconcile] Starting reconciliation loop..." << std::endl;
   ReconciliationResult result;
 
-  // 1. Indexing Cloud State
+  // 1. Indexing Cloud State.
   std::map<std::string, CloudFileMetadata> cloudByOrigin;
   std::map<std::string, std::vector<CloudFileMetadata>> cloudByUuid;
   std::map<std::string, CloudFileMetadata> cloudPathMap;
@@ -209,19 +209,24 @@ ReconciliationResult ReconciliationService::reconcile(
     }
 
     auto itLocalOR = localQueueByOrigin.find(cloudFile.origin);
+
     if (itLocalOR != localQueueByOrigin.end()) {
       isLocalRenamed = (itLocalOR->second.sync_status ==
                         syncStatusToString(SyncStatus::RENAME));
-      isLocalModified = (itLocalOR->second.sync_status ==
-                         syncStatusToString(SyncStatus::MODIFIED));
       isLocalFileMoved = (itLocalOR->second.sync_status ==
-                          syncStatusToString(SyncStatus::DELETE));
+                          syncStatusToString(SyncStatus::MOVED));
     }
 
-    isCloudModified =
-        localFileByPath
-            ? (cloudFile.hashvalue != localFileByPath->lastSyncedHashValue)
-            : false;
+    if (!isLocalModified) {
+      isCloudModified = localFileByPath
+                            ? cloudFile.hashvalue != localFileByPath->hashvalue
+                            : false;
+    } else {
+      isCloudModified =
+          localFileByPath
+              ? (cloudFile.hashvalue != localFileByPath->lastSyncedHashValue)
+              : false;
+    }
 
     if (isLocalRenamed) {
       auto qEntry = localQueueByOrigin[cloudFile.origin];
@@ -241,7 +246,7 @@ ReconciliationResult ReconciliationService::reconcile(
     }
 
     // New file in cloud
-    if (!localFileByPath && !localFileByOrigin) {
+    if (!localFileByPath) {
       if (!localInQueue) {
         result.filesToDownload.push_back(cloudFile);
         continue;
@@ -256,7 +261,7 @@ ReconciliationResult ReconciliationService::reconcile(
       }
       if (!isCloudModified && isCloudRenamed && !isLocalModified &&
           !isLocalRenamed && !isLocalFileMoved && !isCloudFileMoved) {
-        result.filesToRename.push_back({*localFileByOrigin, cloudFile});
+        // result.filesToRename.push_back({*localFileByOrigin, cloudFile});
       }
       // Conflict detection
       if (isCloudModified && !isCloudRenamed && isLocalModified &&
@@ -265,7 +270,7 @@ ReconciliationResult ReconciliationService::reconcile(
       }
       if (!isCloudModified && !isCloudRenamed && !isLocalModified &&
           !isLocalRenamed && !isLocalFileMoved && isCloudFileMoved) {
-        result.filesToMove.push_back({*localFileByOrigin, cloudFile});
+        //        result.filesToMove.push_back({*localFileByOrigin, cloudFile});
       }
     }
 
@@ -285,6 +290,7 @@ ReconciliationResult ReconciliationService::reconcile(
         const auto &status = itLQ->second.sync_status;
         if (status == syncStatusToString(SyncStatus::MODIFIED) ||
             status == syncStatusToString(SyncStatus::RENAME) ||
+            status == syncStatusToString(SyncStatus::MOVED) ||
             status == syncStatusToString(SyncStatus::NEW)) {
           continue; // Skip if local work pending
         }
@@ -320,19 +326,19 @@ ReconciliationResult ReconciliationService::reconcile(
       dbDirMap[d.path] = d;
     dbDirMapByUuid[d.uuid] = d;
   }
-
   std::map<std::string, std::vector<LocalDirRenameMetadata>>
       renameDirCandidates{};
 
   for (const auto &[path, cloudDir] : cloudDirMap) {
+
     auto itUuid = dbDirMapByUuid.find(cloudDir.uuid);
+
     auto itPath = dbDirMap.find(path);
+
     if (itUuid != dbDirMapByUuid.end() && itPath != dbDirMap.end()) {
       renameDirCandidates[cloudDir.uuid].push_back({itUuid->second, cloudDir});
-      std::cout << "[reconcile] rename detected >> Cloud Path" << path
-                << " | Local Path: "
-                << dbDirMapByUuid.find(cloudDir.uuid)->second.path << std::endl;
     }
+
     if (itPath == dbDirMap.end()) {
       // Check if already in queue
       auto dirsInQ = m_dbManager.getDirectoryQueue();
@@ -367,14 +373,15 @@ ReconciliationResult ReconciliationService::reconcile(
   }
 
   for (const auto &[path, dbDir] : dbDirMap) {
+
     auto itUuid = cloudDirMapByUuid.find(dbDir.uuid);
+
     auto itPath = cloudDirMap.find(path);
+
     if (itUuid != cloudDirMapByUuid.end() && itPath == cloudDirMap.end()) {
-      std::cout << "[reconcile] rename detected >> Local Path" << path
-                << " | Cloud Path: "
-                << cloudDirMapByUuid.find(dbDir.uuid)->second.path << std::endl;
       renameDirCandidates[dbDir.uuid].push_back({dbDir, itUuid->second});
     }
+
     if (itPath == cloudDirMap.end()) {
       auto dirsInQ = m_dbManager.getDirectoryQueue();
       bool alreadyInQ = std::any_of(
@@ -382,11 +389,33 @@ ReconciliationResult ReconciliationService::reconcile(
           [&](const DirectoryQueueEntry &e) { return e.path == path; });
 
       if (!alreadyInQ) {
-        result.foldersToDeleteLocal.push_back(
-            {dbDir.absPath, dbDir.path, dbDir.folder});
+        LocalFolderDeleteMetadata dq;
+        dq.absPath = dbDir.absPath;
+        dq.folder = dbDir.folder;
+        dq.device = dbDir.device;
+        dq.path = dbDir.path;
+        dq.uuid = dbDir.uuid;
+        dq.created_at = dbDir.created_at;
+        result.foldersToDeleteLocal.push_back(dq);
       }
     }
   }
+  ReconciliationResult updatedResults =
+      Utility::detectRenames<ReconciliationResult>(
+          result.filesToDownload, result.filesToDeleteLocal,
+          result.foldersToCreateLocal, result.foldersToDeleteLocal);
+
+  auto movedFiles =
+      Utility::removeRedundantMovedFiles<std::vector<FileQueueEntry>>(
+          updatedResults.dirsToMove, updatedResults.filesToMove);
+
+  result.filesToMove = movedFiles;
+  result.filesToDeleteLocal = updatedResults.filesToDeleteLocal;
+  result.filesToDownload = updatedResults.filesToDownload;
+  result.dirsToMove = updatedResults.dirsToMove;
+  result.foldersToCreateLocal = updatedResults.foldersToCreateLocal;
+  result.foldersToDeleteLocal = updatedResults.foldersToDeleteLocal;
+
   // 8. Handle Directory Renames (using inodes from local queue)
   /*
   std::vector<RenameInfo> renames = detectDirRenames(*localDirQueue);
@@ -559,11 +588,11 @@ void ReconciliationService::reconcileLocalState(
   // 1. Fetch current DB state
   auto dbFiles = m_dbManager.getAllFiles();
   auto dbDirs = m_dbManager.getAllDirectories();
-  bool isFiQDeleted = m_dbManager.deleteAllFilesInQueue();
-  bool isDiQDeleted = m_dbManager.deleteAllDirsInQueue();
+  //  bool isFiQDeleted = m_dbManager.deleteAllFilesInQueue();
+  // bool isDiQDeleted = m_dbManager.deleteAllDirsInQueue();
 
-  if (!isDiQDeleted || !isDiQDeleted)
-    return;
+  // if (!isDiQDeleted || !isDiQDeleted)
+  //  return;
 
   // Index DB State
   std::map<std::string, FileMetadata> dbFilesPathMap;
@@ -736,147 +765,176 @@ void ReconciliationService::reconcileLocalState(
       filesToDelete.push_back(fq);
     }
   }
+  /*
+    std::map<std::string, std::vector<FileQueueEntry>> movedFileCandidates;
+    std::map<std::string, std::vector<DirectoryQueueEntry>> movedDirCandidates;
 
-  std::map<std::string, std::vector<FileQueueEntry>> movedFileCandidates;
-  std::map<std::string, std::vector<DirectoryQueueEntry>> movedDirCandidates;
-
-  for (auto &f : filesToAdd) {
-    movedFileCandidates[f.inode].push_back(
-        Utility::constructFileQueueEntry(f, SyncStatus::NEW));
-  }
-
-  for (auto &f : filesToDelete) {
-    movedFileCandidates[f.inode].push_back(f);
-  }
-
-  for (auto &[path, d] : dirsToAddMap) {
-    movedDirCandidates[d.inode].push_back(
-        Utility::constructDirectoryQueueEntry(d, SyncStatus::NEW));
-  }
-
-  for (auto &dq : dirsToDelete) {
-    movedDirCandidates[dq.inode].push_back(dq);
-  }
-
-  filesToAdd.clear();
-  filesToDelete.clear();
-  dirsToAddMap.clear();
-  dirsToDelete.clear();
-  dirsToAdd.clear();
-
-  for (const auto &[inode, group] : movedDirCandidates) {
-
-    if (group.size() == 2) {
-      bool isMoved = false;
-      DirectoryQueueEntry newDir, oldDir;
-
-      if (group[0].sync_status == syncStatusToString(SyncStatus::NEW) &&
-          group[1].sync_status == syncStatusToString(SyncStatus::DELETE)) {
-        isMoved = true;
-        newDir = group[0];
-        oldDir = group[1];
-      }
-
-      if (group[0].sync_status == syncStatusToString(SyncStatus::DELETE) &&
-          group[1].sync_status == syncStatusToString(SyncStatus::NEW)) {
-        isMoved = true;
-        newDir = group[1];
-        oldDir = group[0];
-      }
-
-      if (isMoved) {
-        DirectoryQueueEntry d;
-        d.folder = newDir.folder;
-        d.path = newDir.path;
-        d.device = newDir.device;
-        d.created_at = newDir.created_at;
-        d.absPath = newDir.absPath;
-        d.old_path = oldDir.path;
-        d.sync_status = syncStatusToString(SyncStatus::MOVED);
-        d.inode = newDir.inode;
-        d.lastSynced = "";
-        d.uuid = oldDir.uuid;
-        movedDirsMap[d.path] = d;
-        continue;
-      }
+    for (auto &f : filesToAdd) {
+      movedFileCandidates[f.inode].push_back(
+          Utility::constructFileQueueEntry(f, SyncStatus::NEW));
     }
 
-    for (auto &d : group) {
-
-      if (d.sync_status == syncStatusToString(SyncStatus::NEW)) {
-        dirsToAdd.push_back(Utility::constructDirectoryMetadata(d));
-      }
-
-      if (d.sync_status == syncStatusToString(SyncStatus::DELETE)) {
-        dirsToDelete.push_back(d);
-      }
+    for (auto &f : filesToDelete) {
+      movedFileCandidates[f.inode].push_back(f);
     }
-  }
 
-  for (const auto &[inode, group] : movedFileCandidates) {
-    if (group.size() == 2) {
-      bool isMoved = false;
-      FileQueueEntry newFile, oldFile;
+    for (auto &[path, d] : dirsToAddMap) {
+      movedDirCandidates[d.inode].push_back(
+          Utility::constructDirectoryQueueEntry(d, SyncStatus::NEW));
+    }
 
-      if (group[0].sync_status == syncStatusToString(SyncStatus::NEW) &&
-          group[1].sync_status == syncStatusToString(SyncStatus::DELETE)) {
-        isMoved = true;
-        newFile = group[0];
-        oldFile = group[1];
-      }
+    for (auto &dq : dirsToDelete) {
+      movedDirCandidates[dq.inode].push_back(dq);
+    }
 
-      if (group[0].sync_status == syncStatusToString(SyncStatus::DELETE) &&
-          group[1].sync_status == syncStatusToString(SyncStatus::NEW)) {
-        isMoved = true;
-        newFile = group[1];
-        oldFile = group[0];
-      }
+    filesToAdd.clear();
+    filesToDelete.clear();
+    dirsToAddMap.clear();
+    dirsToDelete.clear();
+    dirsToAdd.clear();
 
-      if (isMoved) {
-        FileQueueEntry f;
-        f.filename = newFile.filename;
-        f.path = newFile.path;
-        f.absPath = newFile.absPath;
-        f.inode = newFile.inode;
-        f.versions = newFile.versions;
-        f.dirID = newFile.dirID;
-        f.last_modified = newFile.last_modified;
-        f.hashvalue = newFile.hashvalue;
-        f.lastSyncedHashValue = newFile.lastSyncedHashValue;
-        f.size = newFile.size;
-        f.lastSynced = "";
-        f.origin = oldFile.origin;
-        f.uuid = oldFile.uuid;
-        f.old_filename = oldFile.filename;
-        f.old_path = oldFile.path;
-        f.sync_status = syncStatusToString(SyncStatus::MOVED);
-        auto itMv = movedDirsMap.find(f.path);
-        if (itMv != movedDirsMap.end()) {
-          f.dirID = itMv->second.uuid;
+    for (const auto &[uuid, group] : movedDirCandidates) {
+
+      if (group.size() == 2) {
+        bool isMoved = false;
+        DirectoryQueueEntry newDir, oldDir;
+
+        if (group[0].sync_status == syncStatusToString(SyncStatus::NEW) &&
+            group[1].sync_status == syncStatusToString(SyncStatus::DELETE)) {
+          isMoved = true;
+          newDir = group[0];
+          oldDir = group[1];
         }
-        movedFiles.push_back(f);
-        continue;
+
+        if (group[0].sync_status == syncStatusToString(SyncStatus::DELETE) &&
+            group[1].sync_status == syncStatusToString(SyncStatus::NEW)) {
+          isMoved = true;
+          newDir = group[1];
+          oldDir = group[0];
+        }
+
+        if (isMoved) {
+          DirectoryQueueEntry d;
+          d.folder = newDir.folder;
+          d.path = newDir.path;
+          d.device = newDir.device;
+          d.created_at = newDir.created_at;
+          d.absPath = newDir.absPath;
+          d.old_path = oldDir.path;
+          d.sync_status = syncStatusToString(SyncStatus::MOVED);
+          d.inode = newDir.inode;
+          d.lastSynced = "";
+          d.uuid = oldDir.uuid;
+          movedDirsMap[d.path] = d;
+          continue;
+        }
+      }
+
+      for (auto &d : group) {
+
+        if (d.sync_status == syncStatusToString(SyncStatus::NEW)) {
+          dirsToAdd.push_back(Utility::constructDirectoryMetadata(d));
+        }
+
+        if (d.sync_status == syncStatusToString(SyncStatus::DELETE)) {
+          dirsToDelete.push_back(d);
+        }
       }
     }
-    for (auto &f : group) {
-      if (f.sync_status == syncStatusToString(SyncStatus::NEW)) {
-        filesToAdd.push_back(Utility::constructFileMetadata(f));
+
+    for (const auto &[inode, group] : movedFileCandidates) {
+      if (group.size() == 2) {
+        bool isMoved = false;
+        FileQueueEntry newFile, oldFile;
+
+        if (group[0].sync_status == syncStatusToString(SyncStatus::NEW) &&
+            group[1].sync_status == syncStatusToString(SyncStatus::DELETE)) {
+          isMoved = true;
+          newFile = group[0];
+          oldFile = group[1];
+        }
+
+        if (group[0].sync_status == syncStatusToString(SyncStatus::DELETE) &&
+            group[1].sync_status == syncStatusToString(SyncStatus::NEW)) {
+          isMoved = true;
+          newFile = group[1];
+          oldFile = group[0];
+        }
+
+        if (isMoved) {
+          FileQueueEntry f;
+          f.filename = newFile.filename;
+          f.path = newFile.path;
+          f.absPath = newFile.absPath;
+          f.inode = newFile.inode;
+          f.versions = newFile.versions;
+          f.dirID = newFile.dirID;
+          f.last_modified = newFile.last_modified;
+          f.hashvalue = newFile.hashvalue;
+          f.lastSyncedHashValue = newFile.lastSyncedHashValue;
+          f.size = newFile.size;
+          f.lastSynced = "";
+          f.origin = oldFile.origin;
+          f.uuid = oldFile.uuid;
+          f.old_filename = oldFile.filename;
+          f.old_path = oldFile.path;
+          f.sync_status = syncStatusToString(SyncStatus::MOVED);
+          auto itMv = movedDirsMap.find(f.path);
+          if (itMv != movedDirsMap.end()) {
+            f.dirID = itMv->second.uuid;
+          }
+          movedFiles.push_back(f);
+          continue;
+        }
       }
-      if (f.sync_status == syncStatusToString(SyncStatus::DELETE)) {
-        filesToDelete.push_back(f);
+      for (auto &f : group) {
+        if (f.sync_status == syncStatusToString(SyncStatus::NEW)) {
+          filesToAdd.push_back(Utility::constructFileMetadata(f));
+        }
+        if (f.sync_status == syncStatusToString(SyncStatus::DELETE)) {
+          filesToDelete.push_back(f);
+        }
       }
     }
-  }
 
-  movedDirs.reserve(movedDirsMap.size());
+    movedDirs.reserve(movedDirsMap.size());
 
-  std::transform(movedDirsMap.begin(), movedDirsMap.end(),
-                 std::back_inserter(movedDirs),
+    std::transform(movedDirsMap.begin(), movedDirsMap.end(),
+                   std::back_inserter(movedDirs),
+                   [&](const auto &pair) { return pair.second; });
+  */
+  std::transform(dirsToAddMap.begin(), dirsToAddMap.end(),
+                 std::back_inserter(dirsToAdd),
                  [&](const auto &pair) { return pair.second; });
 
+  OfflineReconResult updated = Utility::detectRenames<OfflineReconResult>(
+      filesToAdd, filesToDelete, dirsToAdd, dirsToDelete);
+
+  std::cout << "[offline reconcile] filesToDownload : "
+            << updated.filesToDownload.size() << std::endl;
+
+  std::cout << "[offline reconcile] filesToDelete : "
+            << updated.filesToDeleteLocal.size() << std::endl;
+
+  std::cout << "[offline reconcile] filesToMove : "
+            << updated.filesToMove.size() << std::endl;
+
+  std::cout << "[offline reconcile] dirsToMove : " << updated.dirsToMove.size()
+            << std::endl;
+
+  std::cout << "[offline reconcile] dirsToAdd : "
+            << updated.foldersToCreateLocal.size() << std::endl;
+
+  std::cout << "[offline reconcile] dirsToDelete : "
+            << updated.foldersToDeleteLocal.size() << std::endl;
+
+  std::cout << "[offline reconcile] filesToModify : " << filesToModify.size()
+            << std::endl;
+
   bool isLocalDBUpdated = m_dbManager.reconcileLocalState(
-      filesToAdd, filesToDelete, dirsToAdd, dirsToDelete, filesToModify,
-      movedFiles, movedDirs);
+      updated.filesToDownload, updated.filesToDeleteLocal,
+      updated.foldersToCreateLocal, updated.foldersToDeleteLocal, filesToModify,
+      updated.filesToMove, updated.dirsToMove);
 
   std::cout << "[reconcile] isLocalDBUPdated : " << isLocalDBUpdated
             << std::endl;
