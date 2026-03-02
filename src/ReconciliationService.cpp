@@ -267,7 +267,7 @@ ReconciliationResult ReconciliationService::reconcile(
     }
     std::string key = getUniqueKey(dbFile.path, dbFile.filename);
     if (cloudPathMap.find(key) == cloudPathMap.end())
-      filesToDeleteMap[key] = dbFile;
+      result.filesToDeleteLocal.push_back(dbFile);
   }
 
   // 7. Directory Reconciliation (Paths are authoritative)

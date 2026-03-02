@@ -101,17 +101,17 @@ bool CloudSyncWorker::pollCloudToSyncToLocal() {
     std::cout << "[cloudsyncworker] filesToUpdate: " << filesToUpdate.size()
               << "\n";
 
-    processFilesToDownload(filesToDownload);
+    processDirsToMove(dirsToMove);
+
+    processFoldersToDelete(foldersToDeleteLocal);
+
+    processFilesToMove(filesToMove);
 
     processFilesToDelete(filesToDeleteLocal);
 
     processFoldersToCreate(foldersToCreateLocal);
 
-    processFoldersToDelete(foldersToDeleteLocal);
-
-    processDirsToMove(dirsToMove);
-
-    processFilesToMove(filesToMove);
+    processFilesToDownload(filesToDownload);
 
     processFilesInConflict(filesInConflict);
 
