@@ -1,6 +1,5 @@
 #include "FilesystemWatcher.hpp"
 #include "SyncTree.hpp"
-#include "types.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -10,8 +9,6 @@
 #include <map>
 #include <mutex>
 #include <sqlite_orm/sqlite_orm.h>
-#include <thread>
-#include <unordered_map>
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -83,7 +80,6 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
   std::atomic<int> pendingCount{0};
   std::atomic<bool> cacheUpdated{false};
   std::map<std::string, DeletedItem> deletedItems;
-  std::unordered_map<std::string, InodeCacheInfo> &m_inodesCache;
   SyncTree &m_syncTree;
 
   FilesystemWatcher::Callback callback;
@@ -95,9 +91,8 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
   std::chrono::milliseconds pollInterval{100};
   std::chrono::milliseconds settleTime{2000};
 
-  Impl(std::unordered_map<std::string, InodeCacheInfo> &inodesCache,
-       SyncTree &syncTree, FilesystemWatcher::Callback callback)
-      : m_inodesCache(inodesCache), m_syncTree(syncTree), callback(callback) {}
+  Impl(SyncTree &syncTree, FilesystemWatcher::Callback callback)
+      : m_syncTree(syncTree), callback(callback) {}
   ~Impl() = default;
 
   std::string getInode(const std::string &absPath) {
@@ -486,12 +481,9 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
   }
 };
 
-FilesystemWatcher::FilesystemWatcher(
-    const std::string &path,
-    std::unordered_map<std::string, InodeCacheInfo> &inodesCache,
-    SyncTree &syncTree, Callback callback)
-    : m_path(path),
-      m_impl(std::make_unique<Impl>(inodesCache, syncTree, callback)) {}
+FilesystemWatcher::FilesystemWatcher(const std::string &path,
+                                     SyncTree &syncTree, Callback callback)
+    : m_path(path), m_impl(std::make_unique<Impl>(syncTree, callback)) {}
 FilesystemWatcher::~FilesystemWatcher() { stop(); }
 
 void FilesystemWatcher::start() {

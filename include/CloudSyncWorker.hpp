@@ -43,13 +43,17 @@ private:
   std::mutex m_syncUpMutex;
   std::condition_variable m_syncCV;
   std::atomic<int> m_tasksPending = 0;
+  std::atomic<int> m_upSyncTasks = 0;
   std::condition_variable m_tasksCV;
   std::mutex m_tasksPendingMutex;
+  std::mutex m_upSyncTasksMutex;
+  std::condition_variable m_upSyncTasksCV;
 
   bool pollCloudToSyncToLocal();
   void runSyncDown();
   void runSyncUp();
   void processQueueToSyncUp();
+  void controlThread();
 
   std::string getCurrentTime();
   bool createLocalDirectory(const std::string &path);
@@ -81,6 +85,24 @@ private:
 
   void
   processFilesToUpdate(const std::vector<CloudFileMetadata> &filesToUpdate);
+
+  std::optional<bool> deleteFolderInCloud(DirectoryQueueEntry &dq);
+
+  std::optional<bool> moveFolderInCloud(DirectoryQueueEntry &dq,
+                                        bool isRename = true);
+
+  std::optional<bool> createFolderInCloud(DirectoryQueueEntry &dq);
+
+  std::optional<bool> uploadFile(ApiClient &client, const FileQueueEntry &fq);
+
+  std::optional<bool> uploadModifiedFile(ApiClient &client,
+                                         const FileQueueEntry &fq);
+
+  std::optional<bool> deleteFile(ApiClient &client, const FileQueueEntry &fq);
+
+  std::optional<bool> renameFile(ApiClient &client, const FileQueueEntry &fq);
+
+  std::optional<bool> moveFile(ApiClient &client, const FileQueueEntry &fq);
 };
 
 } // namespace sync_app

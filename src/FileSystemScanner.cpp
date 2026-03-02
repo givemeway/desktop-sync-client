@@ -162,7 +162,6 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
       task.file.hash = task.hashFuture.get();
       result.files.push_back(task.file);
     }
-    result.inodesCache = std::move(inodesCache);
   } catch (const std::exception &e) {
     std::cerr << "FileSystem Error: " << e.what() << std::endl;
   }

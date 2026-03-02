@@ -18,6 +18,19 @@ enum class SyncStatus {
   MOVE_CANDIDATE
 };
 
+enum class QPriority {
+  FOLDER_CREATE,
+  FOLDER_RENAME,
+  FOLDER_MOVED,
+  FOLDER_DELETE,
+  FILE_MODIFIED,
+  FILE_DELETE,
+  FILE_UPLOAD,
+  FILE_RENAME,
+  FILE_MOVED,
+  UNKNOWN
+};
+
 struct ScannedFile {
   std::string path; // Relative path from sync root (e.g. "/foo/bar.txt")
   std::string filename;
@@ -44,7 +57,6 @@ struct ScannedDirectory {
 struct ScanResult {
   std::vector<ScannedFile> files;
   std::vector<ScannedDirectory> directories;
-  std::unordered_map<std::string, InodeCacheInfo> inodesCache;
 };
 
 struct FileMetadata {
@@ -91,6 +103,7 @@ struct FileQueueEntry {
   std::string lastSynced = "";
 
   std::string sync_status;
+  std::optional<size_t> priority;
   std::optional<std::string> old_path;
   std::optional<std::string> old_filename;
   std::optional<std::map<std::string, std::string>> dirIDs;
@@ -107,6 +120,7 @@ struct DirectoryQueueEntry {
   std::string lastSynced;
   std::string sync_status;
   std::optional<std::string> old_path;
+  std::optional<size_t> priority;
   std::optional<std::map<std::string, std::string>> dirIDs;
 };
 
@@ -153,6 +167,7 @@ struct LocalFolderCreateMetadata {
 
 struct LocalFolderDeleteMetadata {
   std::string absPath;
+  std::string inode;
   std::string path;
   std::string uuid;
   std::string device;
@@ -237,6 +252,56 @@ inline void to_json(nlohmann::json &j, const DirectoryMetadata &d) {
                      {"folder", d.folder},
                      {"path", d.path},
                      {"created_at", d.created_at}};
+}
+
+inline size_t qPriorityToInt(QPriority priority) {
+  switch (priority) {
+  case QPriority::FOLDER_CREATE:
+    return 7;
+  case QPriority::FOLDER_DELETE:
+    return 1;
+  case QPriority::FOLDER_MOVED:
+    return 2;
+  case QPriority::FOLDER_RENAME:
+    return 3;
+  case QPriority::FILE_RENAME:
+    return 5;
+  case QPriority::FILE_DELETE:
+    return 4;
+  case QPriority::FILE_MODIFIED:
+    return 9;
+  case QPriority::FILE_MOVED:
+    return 6;
+  case QPriority::FILE_UPLOAD:
+    return 8;
+  default:
+    return 10;
+  }
+}
+
+inline QPriority intToQPriority(size_t priority) {
+  switch (priority) {
+  case 1:
+    return QPriority::FOLDER_DELETE;
+  case 2:
+    return QPriority::FOLDER_MOVED;
+  case 3:
+    return QPriority::FOLDER_RENAME;
+  case 4:
+    return QPriority::FILE_DELETE;
+  case 5:
+    return QPriority::FOLDER_RENAME;
+  case 6:
+    return QPriority::FILE_MOVED;
+  case 7:
+    return QPriority::FOLDER_CREATE;
+  case 8:
+    return QPriority::FILE_UPLOAD;
+  case 9:
+    return QPriority::FILE_MODIFIED;
+  default:
+    return QPriority::UNKNOWN;
+  }
 }
 
 inline std::string syncStatusToString(SyncStatus status) {

@@ -89,7 +89,7 @@ int main() {
 
     // 4. Initialize Watcher
     sync_app::FilesystemWatcher watcher(
-        syncFolder, scanResult.inodesCache, syncTree,
+        syncFolder, syncTree,
         [&syncworker](const std::string &path, const std::string &oldPath,
                       sync_app::WatchEvent event) {
           syncworker.enqueueEvent(event, path, oldPath);

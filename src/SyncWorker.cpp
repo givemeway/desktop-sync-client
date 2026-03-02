@@ -11,6 +11,7 @@
 #include <iostream>
 #include <mutex>
 #include <picosha2.h>
+#include <queue>
 #include <set>
 #include <string>
 #include <vector>
@@ -30,6 +31,15 @@ struct SyncWorker::Impl {
   std::string m_syncPath;
 
   std::queue<SyncEvent> m_eventQueue;
+
+  std::priority_queue<FileQueueEntry, std::vector<FileQueueEntry>,
+                      Utility::PriorityComparator<FileQueueEntry>>
+      m_filePriorityQ;
+
+  std::priority_queue<DirectoryQueueEntry, std::vector<DirectoryQueueEntry>,
+                      Utility::PriorityComparator<DirectoryQueueEntry>>
+      m_dirPriorityQ;
+
   std::map<std::string, std::vector<SyncEvent>> m_eventMap;
   std::mutex m_queueMtx;
   std::condition_variable m_queueCV;
@@ -47,6 +57,23 @@ struct SyncWorker::Impl {
        ThreadPool &threadPool, const std::string &syncPath)
       : m_dbManager(dbManager), m_scanner(scanner), m_threadPool(threadPool),
         m_syncPath(syncPath) {}
+
+  template <typename T> void pop(T &t) { t.pop(); }
+  template <typename T1, typename T2> void push(T1 &t, T2 &t2) { t.push(t2); }
+  template <typename T> auto top(T &t) { return t.top(); }
+  template <typename T> bool empty(T &t) {
+    if (t.empty())
+      return true;
+    return false;
+  }
+
+  bool isHighPriorityLocalTaskQueued() {
+    auto fileEntry = m_filePriorityQ.top();
+    auto dirEntry = m_dirPriorityQ.top();
+    if (*fileEntry.priority <= 6 || *dirEntry.priority <= 5)
+      return true;
+    return false;
+  }
 };
 
 SyncWorker::SyncWorker(DatabaseManager &dbManager, FileSystemScanner &scanner,
@@ -56,6 +83,7 @@ SyncWorker::SyncWorker(DatabaseManager &dbManager, FileSystemScanner &scanner,
 
 // SyncWorker::~SyncWorker() = default;
 SyncWorker::~SyncWorker() { stop(); }
+
 void SyncWorker::start() {
   if (m_impl->m_running)
     return;
@@ -67,6 +95,23 @@ void SyncWorker::start() {
   }
   std::cout << "[SyncWorker] " << numThreads << " worker threads started."
             << std::endl;
+  auto qDirs = m_impl->m_dbManager.getAllQueueDirectories();
+  auto qFiles = m_impl->m_dbManager.getAllQueueFiles();
+  for (auto &fq : *qFiles) {
+    {
+      std::lock_guard<std::recursive_mutex> lock(
+          m_impl->m_dbManager.getSyncMutex());
+      m_impl->m_filePriorityQ.push(fq);
+    }
+  }
+  for (auto &dq : *qDirs) {
+    {
+      std::lock_guard<std::recursive_mutex> lock(
+          m_impl->m_dbManager.getSyncMutex());
+
+      m_impl->m_dirPriorityQ.push(dq);
+    }
+  }
 }
 void SyncWorker::stop() {
   if (!m_impl->m_running)
@@ -81,6 +126,60 @@ void SyncWorker::stop() {
   m_impl->m_workerThreads.clear();
   std::cout << "[SyncWorker] All worker threads stopped." << std::endl;
 }
+
+bool SyncWorker::isHighPriorityLocalTaskQueued() const {
+  std::lock_guard<std::recursive_mutex> lock(
+      m_impl->m_dbManager.getSyncMutex());
+  return m_impl->isHighPriorityLocalTaskQueued();
+};
+
+void SyncWorker::pushDirEntry(const DirectoryQueueEntry &dq) {
+  std::lock_guard<std::recursive_mutex> lock(
+      m_impl->m_dbManager.getSyncMutex());
+  return m_impl->m_dirPriorityQ.push(dq);
+}
+
+void SyncWorker::pushFileEntry(const FileQueueEntry &fq) {
+  std::lock_guard<std::recursive_mutex> lock(
+      m_impl->m_dbManager.getSyncMutex());
+  return m_impl->m_filePriorityQ.push(fq);
+}
+
+void SyncWorker::popFileEntry() {
+  std::lock_guard<std::recursive_mutex> lock(
+      m_impl->m_dbManager.getSyncMutex());
+  return m_impl->pop(m_impl->m_filePriorityQ);
+};
+
+void SyncWorker::popDirEntry() {
+  std::lock_guard<std::recursive_mutex> lock(
+      m_impl->m_dbManager.getSyncMutex());
+  return m_impl->pop(m_impl->m_dirPriorityQ);
+};
+
+bool SyncWorker::fileIsEmpty() {
+  std::lock_guard<std::recursive_mutex> lock(
+      m_impl->m_dbManager.getSyncMutex());
+  return m_impl->empty(m_impl->m_filePriorityQ);
+};
+
+bool SyncWorker::dirIsEmpty() {
+  std::lock_guard<std::recursive_mutex> lock(
+      m_impl->m_dbManager.getSyncMutex());
+  return m_impl->empty(m_impl->m_dirPriorityQ);
+};
+
+FileQueueEntry SyncWorker::topFileEntry() const {
+  std::lock_guard<std::recursive_mutex> lock(
+      m_impl->m_dbManager.getSyncMutex());
+  return m_impl->top(m_impl->m_filePriorityQ);
+};
+
+DirectoryQueueEntry SyncWorker::topDirEntry() const {
+  std::lock_guard<std::recursive_mutex> lock(
+      m_impl->m_dbManager.getSyncMutex());
+  return m_impl->top(m_impl->m_dirPriorityQ);
+};
 
 void SyncWorker::addIgnoreEvent(const std::string &path, WatchEvent event) {
   std::lock_guard<std::mutex> lock(m_impl->m_ignoreMtx);
@@ -298,6 +397,7 @@ void SyncWorker::handleAdded(const std::string &path) {
         std::string old_path = d.path;
         dq = Utility::constructDirectoryQueueEntry(d, SyncStatus::FILE_LINKED,
                                                    std::move(old_path));
+        dq.priority = 6;
         m_impl->m_dbManager.insertDirectory(d, dq);
         f.dirID = d.uuid;
         fq.dirID = d.uuid;
@@ -308,14 +408,16 @@ void SyncWorker::handleAdded(const std::string &path) {
       std::string old_filename = f.filename;
       fq = Utility::constructFileQueueEntry(
           f, SyncStatus::NEW, std::move(old_path), std::move(old_filename));
+      fq.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+      m_impl->m_filePriorityQ.push(fq);
       bool isFileInserted = m_impl->m_dbManager.insertFile(f, fq);
       if (!isFileInserted)
         std::cout << "[syncworker] file added into db FAILED" << f.absPath
                   << std::endl;
-    } else {
+    }
+    if (file.has_value())
       std::cout << "[syncworker] File Already Exists, Skipping: " << path
                 << std::endl;
-    }
   } else {
     // 3. Folder Logic (LOCK)
     std::lock_guard<std::recursive_mutex> lock(
@@ -339,6 +441,8 @@ void SyncWorker::handleAdded(const std::string &path) {
       std::string old_path = d.path;
       dq = Utility::constructDirectoryQueueEntry(d, SyncStatus::NEW,
                                                  std::move(old_path));
+      dq.priority = qPriorityToInt(QPriority::FOLDER_CREATE);
+      m_impl->m_dirPriorityQ.push(dq);
       m_impl->m_dbManager.insertDirectory(d, dq);
     } else {
       std::cout << "[syncworker] Dir Already Exists, Skipping: " << path
@@ -364,6 +468,8 @@ void SyncWorker::handleDeleted(const std::string &path) {
     DirectoryQueueEntry dq{Utility::constructDirectoryQueueEntry(*existingDir)};
     dq.sync_status = syncStatusToString(SyncStatus::DELETE);
     dq.old_path = dq.path;
+    dq.priority = qPriorityToInt(QPriority::FOLDER_DELETE);
+    m_impl->m_dirPriorityQ.push(dq);
     m_impl->m_dbManager.deleteFolderWithTransaction(relPath, dq);
     return;
   }
@@ -379,6 +485,8 @@ void SyncWorker::handleDeleted(const std::string &path) {
     fq = Utility::constructFileQueueEntry(*existingFile, SyncStatus::DELETE,
                                           std::move(old_path),
                                           std::move(old_filename));
+    fq.priority = qPriorityToInt(QPriority::FILE_DELETE);
+    m_impl->m_filePriorityQ.push(fq);
     m_impl->m_dbManager.deleteFile(existingFile->path, existingFile->filename,
                                    fq);
     return;
@@ -399,6 +507,9 @@ void SyncWorker::handleRenamed(const std::string &path,
   }
   if (!isMoved) {
     if (fs::is_directory(path)) {
+      std::lock_guard<std::recursive_mutex> lock(
+          m_impl->m_dbManager.getSyncMutex());
+
       fs::path fp(oldPath);
       fs::path base(m_impl->m_syncPath);
       std::string oldRelPath = "/" + fs::relative(fp, base).generic_string();
@@ -406,9 +517,6 @@ void SyncWorker::handleRenamed(const std::string &path,
       std::string relPath = m_impl->m_scanner.toRelativePath(path);
       pathParts o = m_impl->m_dbManager.getFolderDevice(fs::path(oldRelPath));
       pathParts n = m_impl->m_dbManager.getFolderDevice(fs::path(relPath));
-
-      std::lock_guard<std::recursive_mutex> lock(
-          m_impl->m_dbManager.getSyncMutex());
 
       auto existingDir = m_impl->m_dbManager.getDirectoryByPath(
           o.device, o.folder, oldRelPath);
@@ -421,18 +529,27 @@ void SyncWorker::handleRenamed(const std::string &path,
         dq.absPath = path;
         dq.device = n.device;
         dq.folder = n.folder;
+        dq.priority = qPriorityToInt(QPriority::FOLDER_RENAME);
+        m_impl->m_dirPriorityQ.push(dq);
         m_impl->m_dbManager.moveDirectory(relPath, oldRelPath, dq);
-      } else {
+        std::cout << "[syncworker] Folder Renamed Successfully!" << std::endl;
+      }
+      if (existingDir.has_value()) {
         std::cout
             << "[syncworker] old folder name not found in DB. It has to be "
                "added as new folder"
             << std::endl;
         handleAdded(path);
+        return;
       }
-    } else {
+    }
+    if (!fs::is_directory(path)) {
       // file renamed
       fs::path p(path);
       fs::path op(oldPath);
+      std::lock_guard<std::recursive_mutex> lock(
+          m_impl->m_dbManager.getSyncMutex());
+
       std::string relPath = m_impl->m_scanner.toRelativePath(path);
       std::string oldRelPath = "/" + fs::relative(oldPath, m_impl->m_syncPath)
                                          .parent_path()
@@ -458,11 +575,6 @@ void SyncWorker::handleRenamed(const std::string &path,
       auto inode = m_impl->m_scanner.getInode(path);
 
       // 2. Database Work (LOCK)
-      std::cout << "[SyncWorker] handleRenamed: waiting for lock for " << path
-                << std::endl;
-      std::lock_guard<std::recursive_mutex> lock(
-          m_impl->m_dbManager.getSyncMutex());
-
       std::optional<FileMetadata> file =
           m_impl->m_dbManager.getFileByPath(oldRelPath, oldFileName);
       if (file.has_value()) {
@@ -481,8 +593,13 @@ void SyncWorker::handleRenamed(const std::string &path,
         f.lastSyncedHashValue = file->lastSyncedHashValue;
 
         pathParts part = m_impl->m_dbManager.getFolderDevice(fs::path(relPath));
-        auto dir = m_impl->m_dbManager.getDirectoryByPath(part.device,
-                                                          part.folder, relPath);
+        std::optional<DirectoryMetadata> dir;
+        {
+          std::lock_guard<std::recursive_mutex> lock(
+              m_impl->m_dbManager.getSyncMutex());
+          dir = m_impl->m_dbManager.getDirectoryByPath(part.device, part.folder,
+                                                       relPath);
+        }
         if (dir.has_value()) {
           f.dirID = dir->uuid;
         } else {
@@ -506,15 +623,17 @@ void SyncWorker::handleRenamed(const std::string &path,
         }
         std::string old_filename = oldFileName;
         std::string old_path = oldRelPath;
-        //        fq.sync_status = syncStatusToString(SyncStatus::RENAME);
 
         fq = Utility::constructFileQueueEntry(f, SyncStatus::RENAME,
                                               std::move(old_path),
                                               std::move(old_filename));
+        fq.priority = qPriorityToInt(QPriority::FILE_RENAME);
         f.conflictId = "";
+        m_impl->m_filePriorityQ.push(fq);
         m_impl->m_dbManager.insertFile(f, fq);
-        // triggerUpload();
-      } else {
+        std::cout << "[syncworker] file renamed successfully" << std::endl;
+      }
+      if (!file.has_value()) {
         std::cout << "[syncworker] old file not found in DB during rename, "
                      "adding as new: "
                   << path << std::endl;
@@ -523,7 +642,8 @@ void SyncWorker::handleRenamed(const std::string &path,
         handleAdded(path);
       }
     }
-  } else {
+  }
+  if (isMoved) {
     if (fs::is_directory(path)) {
       std::string relPath = m_impl->m_scanner.toRelativePath(path);
       fs::path fp(oldPath);
@@ -544,27 +664,37 @@ void SyncWorker::handleRenamed(const std::string &path,
           fs::path(path).parent_path().generic_string());
       dq.uuid = "";
       dq.lastSynced = "";
+      dq.priority = qPriorityToInt(QPriority::FOLDER_MOVED);
       pathParts op = m_impl->m_dbManager.getFolderDevice(oldRelPath);
       std::lock_guard<std::recursive_mutex> lock(
           m_impl->m_dbManager.getSyncMutex());
       auto existingDir = m_impl->m_dbManager.getDirectoryByPath(
           op.device, op.folder, oldRelPath);
+
       if (existingDir.has_value()) {
         dq.uuid = existingDir->uuid;
-      } else {
+      }
+      if (!existingDir.has_value()) {
         std::cout << "[syncworker] move failed as dir does not exist"
                   << std::endl;
         return;
       }
+
+      m_impl->m_dirPriorityQ.push(dq);
+
       bool isFolderMoved =
           m_impl->m_dbManager.moveDirectory(relPath, oldRelPath, dq);
+
       if (isFolderMoved) {
         std::cout << "[syncworker] " << oldRelPath << " MOVED TO =>" << relPath
                   << std::endl;
         return;
       }
-      std::cout << "[syncworker] move failed" << std::endl;
-    } else {
+      if (!isFolderMoved)
+        std::cout << "[syncworker] move failed" << std::endl;
+    }
+
+    if (!fs::is_directory(path)) {
       std::string newRelPath = m_impl->m_scanner.toRelativePath(path);
       fs::path oldFileAbsPath(oldPath);
       fs::path base(m_impl->m_syncPath);
@@ -587,160 +717,22 @@ void SyncWorker::handleRenamed(const std::string &path,
         fq = Utility::constructFileQueueEntry(*file, SyncStatus::MOVED,
                                               std::move(old_path),
                                               std::move(old_filename));
+        fq.priority = qPriorityToInt(QPriority::FILE_MOVED);
+        m_impl->m_filePriorityQ.push(fq);
         bool isFileMoved = m_impl->m_dbManager.moveFile(f, fq);
         if (!isFileMoved) {
           std::cerr << "[syncworker] unable to move the file from => "
                     << oldRelPath << " to =>" << newRelPath << std::endl;
+        } else {
+          std::cerr << "[syncworker] file moved succeded => " << oldRelPath
+                    << " to =>" << newRelPath << std::endl;
         }
-      } else {
+      }
+      if (!file.has_value())
         std::cout << "[syncworker] file not found. It has to be treated as Add "
                      "& remove event.. Implementation pending.."
                   << std::endl;
-      }
     }
-
-    /*if (isMoved) {
-
-      std::unique_lock<std::mutex> lock(m_impl->m_moveMtx);
-      m_impl->m_moveCV.wait(
-          lock, [&]() { return !m_impl->m_activeInodes.contains(inode); });
-      auto scannedItems = m_impl->m_scanner.scanSyncPath(path);
-      ScannedDirectory parent;
-      parent.absPath = path;
-      parent.path = relPath;
-      parent.inode = m_impl->m_scanner.getInode(path);
-      parent.mtime =
-          m_impl->m_scanner.getUnixTimeStamp(fs::last_write_time(path));
-      parent.name =
-          m_impl->m_dbManager.getFolderDevice(fs::path(relPath)).folder;
-      scannedItems.directories.push_back(parent);
-      removeEventMap(inode, path);
-      {
-        std::lock_guard<std::recursive_mutex> lock(
-            m_impl->m_dbManager.getSyncMutex());
-        auto queueItems = m_impl->m_dbManager.getDirQueueByInode(inode);
-        if (queueItems.has_value()) {
-          auto [filesQ, dirsQ] = *queueItems;
-          std::map<std::string, std::vector<FileQueueEntry>> filesMap{};
-          std::map<std::string, DirectoryQueueEntry> dirsMap{};
-          std::vector<FileMetadata> files;
-          std::vector<DirectoryMetadata> dirs;
-          for (auto &f : filesQ) {
-            filesMap[f.inode].push_back(f);
-          }
-          for (auto &d : dirsQ) {
-            dirsMap[d.inode] = d;
-          }
-
-          for (auto &f : scannedItems.files) {
-            auto it = filesMap.find(f.inode);
-            if (it != filesMap.end()) {
-              for (auto &i : it->second) {
-                auto file = constructFileMetadata(f, i);
-                files.push_back(file);
-              }
-            } else {
-              pathParts p =
-                  m_impl->m_dbManager.getFolderDevice(fs::path(f.path));
-              auto d = m_impl->m_dbManager.getDirectoryByPath(p.device,
-                                                               p.folder,
-    f.path); FileMetadata file{}; if (d.has_value()) file =
-    constructFileMetadata(f, {}, d->uuid); else {
-                // create a new directory path;
-              }
-              files.push_back(file);
-            }
-          }
-
-          for (auto &d : scannedItems.directories) {
-            auto it = dirsMap.find(d.inode);
-            if (it != dirsMap.end()) {
-              auto dir = constructDirectoryMetadata(d, it->second);
-              dirs.push_back(dir);
-            } else {
-              auto dir = constructDirectoryMetadata(d, {});
-              dirs.push_back(dir);
-            }
-          }
-
-          auto isInserted = m_impl->m_dbManager.insertFilesAndDirectories(
-              files, dirs, relPath, oldRelPath);
-          if (!isInserted) {
-            std::cout
-                << "[syncworker] unable to insert items from moved directory
-                = > "
-                        << path << std::endl;
-          }
-        } else {
-          // if the queue entries are empty
-        }
-      }
-      return;
-    } else if (isMoved && !isDir && !inode.empty()) {
-      // handle file move
-      fs::path fp(oldPath);
-      fs::path base(m_impl->m_syncPath);
-      std::string rel = fs::relative(fp, base).string();
-      std::string oldRelPath = rel == "." ? "/" : "/" + rel;
-      std::unique_lock<std::mutex> lock(m_impl->m_moveMtx);
-      std::string filename = fs::path(oldPath).filename().string();
-      m_impl->m_moveCV.wait(
-          lock, [&]() { return !m_impl->m_activeInodes.contains(inode); });
-
-      {
-        std::lock_guard<std::recursive_mutex> lk(
-            m_impl->m_dbManager.getSyncMutex());
-        auto qFile =
-            m_impl->m_dbManager.getFileQueueByPath(oldRelPath, filename);
-        if (qFile.has_value()) {
-          FileQueueEntry fq;
-          FileMetadata f;
-          if (qFile->sync_status == syncStatusToString(SyncStatus::DELETE)) {
-            f.filename = qFile->filename;
-            f.path = relPath; // new path f.absPath =
-            path;
-            f.inode = inode;
-            f.hashvalue = qFile->hashvalue;
-            f.lastSyncedHashValue = qFile->hashvalue;
-            f.lastSynced = ""; // since the
-            move it not yet moved to
-                // sync keep it empty
-                f.last_modified = qFile->last_modified;
-            f.origin = qFile->origin;
-            f.uuid = qFile->uuid;
-            f.size = qFile->size;
-            pathParts p =
-                m_impl->m_dbManager.getFolderDevice(fs::path(relPath));
-            auto dir = m_impl->m_dbManager.getDirectoryByPath(
-                p.device, p.folder, relPath);
-            if (!dir.has_value()) {
-              // create path in the main dir table;
-              f.dirID = ""; // get the new dirID from where the DB belongs to
-                            // after creating it
-            } else {
-              f.dirID = dir->uuid;
-            }
-            f.versions = qFile->versions;
-            fq = FileMetadata(f);
-            fq.sync_status = syncStatusToString(SyncStatus::MOVED);
-            fq.old_path = oldRelPath;
-            fq.old_filename = qFile->old_filename;
-            bool isMoveUpdated = m_impl->m_dbManager.updateMovedFile(fq, f);
-            if (!isMoveUpdated) {
-              std::cout << "[syncworker] file move failed : " << std::endl;
-            } else {
-              std::cout << "[syncworker] file move successful : from ->"
-                        << oldRelPath << " ==> " << relPath << std::endl;
-            }
-          }
-        } else {
-          // deleted file not found in Queue so treat it as a normal file
-          addition
-        }
-      }
-      return;
-    }
-    */
   }
 }
 
@@ -758,10 +750,13 @@ void SyncWorker::handleModified(const std::string &path) {
     }
     std::vector<unsigned char> hash(picosha2::k_digest_size);
     picosha2::hash256(fi, hash.begin(), hash.end());
+
     std::string hashStr =
         picosha2::bytes_to_hex_string(hash.begin(), hash.end());
+
     std::int64_t unixTimeStamp =
         m_impl->m_scanner.getUnixTimeStamp(fs::last_write_time(path));
+
     std::uintmax_t fileSize = fs::file_size(path);
     auto inode = m_impl->m_scanner.getInode(path);
 
@@ -778,6 +773,7 @@ void SyncWorker::handleModified(const std::string &path) {
     if (existingFile.has_value()) {
       FileMetadata f;
       FileQueueEntry fq;
+
       f.filename = filename;
       f.path = relPath;
       f.absPath = path;
@@ -790,17 +786,24 @@ void SyncWorker::handleModified(const std::string &path) {
       f.versions = existingFile->versions + 1;
       f.size = fileSize;
       f.dirID = existingFile->dirID;
+
       auto now = std::chrono::system_clock::now().time_since_epoch();
       auto timestamp =
           std::chrono::duration_cast<std::chrono::seconds>(now).count();
+
       f.lastSynced = std::to_string(timestamp);
-      //      fq.sync_status = syncStatusToString(SyncStatus::MODIFIED);
+
       std::string old_path = f.path;
       std::string old_filename = f.filename;
+
       fq = Utility::constructFileQueueEntry(f, SyncStatus::MODIFIED,
                                             std::move(old_path),
                                             std::move(old_filename));
+
+      fq.priority = qPriorityToInt(QPriority::FILE_MODIFIED);
+
       f.conflictId = "";
+      m_impl->m_filePriorityQ.push(fq);
       m_impl->m_dbManager.insertFile(f, fq);
       // triggerUpload();
     } else {

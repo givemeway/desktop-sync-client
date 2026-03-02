@@ -28,8 +28,6 @@ public:
   void addIgnoreEvent(const std::string &path, WatchEvent event);
   void removeIgnoreEvent(const std::string &path, WatchEvent event);
   void removeEventMap(const std::string &inode, const std::string &path = "");
-  //  void setUploadCallback(std::function<void()> callback);
-  // void triggerUpload();
   void workerLoop();
   FileMetadata constructFileMetadata(const ScannedFile &scannedFile,
                                      const FileQueueEntry &f,
@@ -37,6 +35,16 @@ public:
   DirectoryMetadata
   constructDirectoryMetadata(const ScannedDirectory &scannedDir,
                              const DirectoryQueueEntry &d);
+
+  bool isHighPriorityLocalTaskQueued() const;
+  void popFileEntry();
+  void pushFileEntry(const FileQueueEntry &fq);
+  void pushDirEntry(const DirectoryQueueEntry &dq);
+  void popDirEntry();
+  bool fileIsEmpty();
+  bool dirIsEmpty();
+  FileQueueEntry topFileEntry() const;
+  DirectoryQueueEntry topDirEntry() const;
 
 private:
   std::function<void()> m_uploadCallback;

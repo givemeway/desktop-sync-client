@@ -30,11 +30,12 @@ public:
                   bool isModified = false);
   bool deleteFile(const FileQueueEntry &file);
   bool renameFile(const FileQueueEntry &file);
+  bool moveFile(const FileQueueEntry &file);
 
   // Directory operations
   bool createFolder(const DirectoryQueueEntry &dir);
   bool deleteFolder(const DirectoryQueueEntry &dir);
-  bool renameFolder(const DirectoryQueueEntry &dir);
+  bool moveFolder(const DirectoryQueueEntry &dir, bool isRename = true);
 
 private:
   struct Impl;

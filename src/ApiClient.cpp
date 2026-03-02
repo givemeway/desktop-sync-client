@@ -351,15 +351,24 @@ bool ApiClient::deleteFolder(const DirectoryQueueEntry &dir) {
   return res && res->status == 200;
 }
 
-bool ApiClient::renameFolder(const DirectoryQueueEntry &dir) {
+bool ApiClient::moveFolder(const DirectoryQueueEntry &dir, bool isRename) {
   json data;
   data["oldPath"] = dir.old_path.value_or("");
   data["newPath"] = dir.path;
   data["username"] = m_userEmail;
 
-  auto res = m_impl->client.Post("/app/sync/renameFolder", data.dump(),
-                                 "application/json");
-  return res && res->status == 200;
+  using apiReturnType = decltype(m_impl->client.Post("/"));
+  apiReturnType res;
+
+  if (isRename) {
+    res = m_impl->client.Post("/app/sync/renameFolder", data.dump(),
+                              "application/json");
+  } else {
+    res = m_impl->client.Post("/app/sync/moveFolder", data.dump(),
+                              "application/json");
+  }
+
+  return res && (res->status == 200 || res->status == 409);
 }
 
 ApiClient::PathParts ApiClient::parsePath(const std::string &path) {

@@ -211,7 +211,8 @@ public:
   }
 
   template <typename R, typename T1, typename T2, typename T3, typename T4>
-  R static detectRenames(T1 &fa, T2 &fd, T3 &da, T4 &dd) {
+  R static detectRenames(T1 &fa, T2 &fd, T3 &da, T4 &dd,
+                         std::string &syncPath) {
 
     std::map<std::string, std::vector<FileQueueEntry>> movedFileCandidates;
     std::map<std::string, std::vector<DirectoryQueueEntry>> movedDirCandidates;
@@ -314,9 +315,10 @@ public:
           d.device = newDir.device;
           d.created_at = newDir.created_at;
           d.absPath = newDir.absPath;
+          d.dirIDs = newDir.dirIDs;
           d.old_path = oldDir.path;
           d.sync_status = syncStatusToString(SyncStatus::MOVED);
-          d.inode = newDir.inode;
+          d.inode = oldDir.inode;
           d.lastSynced = "";
           d.uuid = oldDir.uuid;
           movedDirsMap[d.path] = d;
@@ -375,8 +377,8 @@ public:
           FileQueueEntry f;
           f.filename = newFile.filename;
           f.path = newFile.path;
-          f.absPath = newFile.absPath;
-          f.inode = newFile.inode;
+          f.absPath = newFile.path == "/" ? syncPath : syncPath + newFile.path;
+          f.inode = oldFile.inode;
           f.versions = newFile.versions;
           f.dirID = newFile.dirID;
           f.last_modified = newFile.last_modified;
@@ -388,6 +390,7 @@ public:
           f.uuid = oldFile.uuid;
           f.old_filename = oldFile.filename;
           f.old_path = oldFile.path;
+          f.dirIDs = newFile.dirIDs;
           f.sync_status = syncStatusToString(SyncStatus::MOVED);
           auto itMv = movedDirsMap.find(f.path);
           if (itMv != movedDirsMap.end()) {
@@ -473,6 +476,43 @@ public:
     }
     return filesTomove;
   }
+
+  template <typename T> T static reduceDirs(const T &dirs) {
+    if (dirs.empty())
+      return {};
+    T dirsCopy{dirs};
+    // 1. Sort alphabetically
+    std::sort(dirsCopy.begin(), dirsCopy.end(),
+              [](const auto &a, const auto &b) { return a.path < b.path; });
+    T filtered;
+    filtered.push_back(dirsCopy[0]); // The first one is always a "root"
+
+    std::string currentRoot = dirsCopy[0].path;
+    if (currentRoot.back() != '/')
+      currentRoot += "/";
+    for (size_t i = 1; i < dirsCopy.size(); ++i) {
+      // 2. Only keep if it's NOT a child of the current active root
+      if (!dirsCopy[i].path.starts_with(currentRoot)) {
+        filtered.push_back(dirsCopy[i]);
+        currentRoot = dirsCopy[i].path;
+        if (currentRoot.back() != '/')
+          currentRoot += "/";
+      }
+    }
+    return filtered;
+  }
+
+  template <typename T> struct PriorityComparator {
+    bool operator()(const T &a, const T &b) {
+      if (!a.priority.has_value() && !b.priority.has_value())
+        return false;
+      if (!a.priority.has_value())
+        return true;
+      if (!b.priority.has_value())
+        return false;
+      return a.priority > b.priority;
+    }
+  };
 };
 
 } // namespace sync_app

@@ -86,7 +86,7 @@ public:
   getDirQueueByInode(const std::string &inode);
 
   bool moveDirectory(const std::string &path, const std::string &oldPath,
-                     const DirectoryQueueEntry &dq);
+                     const DirectoryQueueEntry &dq, bool isLocalMove = true);
 
   bool insertDirectory(const DirectoryMetadata &dir,
                        const DirectoryQueueEntry &dirQueue);

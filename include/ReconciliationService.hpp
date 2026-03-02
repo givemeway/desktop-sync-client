@@ -46,16 +46,6 @@ private:
 
   // Helper methods
   std::vector<std::string> splitDbPath(const std::string &p);
-  std::optional<struct PathDiff>
-  findRenameDepthFromPath(const std::string &oldPath,
-                          const std::string &newPath);
-  std::vector<RenameInfo>
-  detectDirRenames(const std::vector<DirectoryQueueEntry> &entries);
-  std::vector<RenameInfo>
-  collapseDirRenames(const std::vector<RenameInfo> &renames);
-  void reconcileDirRenamedCandidates(
-      const std::vector<RenameInfo> &localFoldersRenamed);
-
   std::string getUniqueKey(const std::string &dir, const std::string &filename);
 
   // Internal state management helpers
@@ -78,12 +68,6 @@ private:
                                                 SyncStatus &status);
   DirectoryQueueEntry createFileQueueEntry(const FileMetadata &f,
                                            SyncStatus &status);
-};
-
-struct PathDiff {
-  int32_t depth;
-  std::optional<std::string> oldSegment;
-  std::optional<std::string> newSegment;
 };
 
 } // namespace sync_app

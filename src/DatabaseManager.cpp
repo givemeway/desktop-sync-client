@@ -7,7 +7,6 @@
 #include <mutex>
 #include <sqlite3.h>
 #include <sqlite_orm/sqlite_orm.h>
-#include <sstream>
 using namespace sqlite_orm;
 namespace sync_app {
 
@@ -811,10 +810,8 @@ bool DatabaseManager::reconcileLocalState(
                        return Utility::constructDirectoryMetadata(dq);
                      });
       m_impl->storage.replace_range(dirsInMain.begin(), dirsInMain.end());
-      m_impl->storage.replace_range(dirsToMove.begin(), dirsToMove.end());
-
-      dirsInQ.clear();
-      dirsInMain.clear();
+      //      m_impl->storage.replace_range(dirsToMove.begin(),
+      //      dirsToMove.end());
       // **************************************************************************
       // 7. move/rename files
       //
@@ -830,39 +827,18 @@ bool DatabaseManager::reconcileLocalState(
       //*******************************************************************
       // removing redundant fileQ entries which are already part of the dir
       // moves
-      std::map<std::string, std::vector<FileQueueEntry>> movedFilesPathMap;
+
       std::vector<FileQueueEntry> movedFiles;
-
-      for (auto &f : filesToMove) {
-        movedFilesPathMap[f.path].push_back(f);
-      }
-
-      for (auto &[path, d] : movedDirsMap) {
-        auto itNewPath = movedFilesPathMap.find(path);
-        if (itNewPath != movedFilesPathMap.end()) {
-          for (auto &f : itNewPath->second) {
-            if (d.old_path != *f.old_path) {
-              movedFiles.push_back(f);
-            }
-          }
-          movedFilesPathMap.erase(path);
-        }
-      }
-
-      for (auto &[path, files] : movedFilesPathMap) {
-        for (auto &f : files) {
-          movedFiles.push_back(f);
-        }
-      }
-      movedFilesPathMap.clear();
+      movedFiles =
+          Utility::removeRedundantMovedFiles<std::vector<FileQueueEntry>>(
+              dirsToMove, filesToMove);
       filesInQ.reserve(movedFiles.size());
-
-      for (auto &f : movedFiles) {
-        movedFilesPathMap[f.path].push_back(f);
-      }
 
       //*********************************************************************
       // map the corresponding moved Files's dirs to be inserted into Queue
+      std::vector<DirectoryQueueEntry> reducedDirQ;
+      reducedDirQ =
+          Utility::reduceDirs<std::vector<DirectoryQueueEntry>>(dirsToMove);
 
       std::transform(
           filesToMove.begin(), filesToMove.end(),
@@ -929,30 +905,12 @@ bool DatabaseManager::reconcileLocalState(
       std::transform(dirsInQMap.begin(), dirsInQMap.end(),
                      std::back_inserter(dirsInQ),
                      [&](const auto &pair) { return pair.second; });
-
-      // sort by the path depth
-      std::sort(
-          dirsInQ.begin(), dirsInQ.end(),
-          [&](const DirectoryQueueEntry &a, const DirectoryQueueEntry &b) {
-            std::stringstream ss_a{a.path};
-            std::string token_a;
-            std::vector<std::string> segments_a;
-            while (std::getline(ss_a, token_a, '/')) {
-              if (!token_a.empty())
-                segments_a.push_back(token_a);
-            }
-            std::stringstream ss_b{a.path};
-            std::string token_b;
-            std::vector<std::string> segments_b;
-            while (std::getline(ss_b, token_b, '/')) {
-              if (!token_b.empty())
-                segments_b.push_back(token_b);
-            }
-            return segments_a.size() < segments_b.size();
-          });
-
-      std::string minPath = "/";
-
+      // add the actual folder that was moved
+      for (auto &d : reducedDirQ) {
+        auto it = dirsInQMap.find(d.path);
+        if (it == dirsInQMap.end())
+          dirsInQ.push_back(d);
+      }
       // extract the dirs to be inserted into main from the map
       std::transform(dirsInMainMap.begin(), dirsInMainMap.end(),
                      std::back_inserter(dirsInMain),
@@ -1177,7 +1135,8 @@ bool DatabaseManager::deleteFolderWithTransaction(
 
 bool DatabaseManager::moveDirectory(const std::string &path,
                                     const std::string &oldPath,
-                                    const DirectoryQueueEntry &dq) {
+                                    const DirectoryQueueEntry &dq,
+                                    bool isLocalMove) {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.transaction([&]() {
@@ -1215,19 +1174,21 @@ bool DatabaseManager::moveDirectory(const std::string &path,
         // update directory
         m_impl->storage.replace<DirectoryMetadata>(d);
       }
-      std::vector<DirectoryQueueEntry> queueDirs =
-          m_impl->storage.get_all<DirectoryQueueEntry>(
+      if (isLocalMove) {
+        std::vector<DirectoryQueueEntry> queueDirs =
+            m_impl->storage.get_all<DirectoryQueueEntry>(
+                where(c(&DirectoryQueueEntry::path) == oldPath ||
+                      like(&DirectoryQueueEntry::path, oldPath + "/%")));
+        if (queueDirs.size() > 0) {
+          m_impl->storage.remove_all<FileQueueEntry>(
+              where(c(&FileQueueEntry::path) == oldPath ||
+                    like(&FileQueueEntry::path, oldPath + "/%")));
+          m_impl->storage.remove_all<DirectoryQueueEntry>(
               where(c(&DirectoryQueueEntry::path) == oldPath ||
                     like(&DirectoryQueueEntry::path, oldPath + "/%")));
-      if (queueDirs.size() > 0) {
-        m_impl->storage.remove_all<FileQueueEntry>(
-            where(c(&FileQueueEntry::path) == oldPath ||
-                  like(&FileQueueEntry::path, oldPath + "/%")));
-        m_impl->storage.remove_all<DirectoryQueueEntry>(
-            where(c(&DirectoryQueueEntry::path) == oldPath ||
-                  like(&DirectoryQueueEntry::path, oldPath + "/%")));
+        }
+        m_impl->storage.replace<DirectoryQueueEntry>(dq);
       }
-      m_impl->storage.replace<DirectoryQueueEntry>(dq);
       return true;
     });
   } catch (const std::exception &e) {
