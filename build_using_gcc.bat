@@ -14,7 +14,7 @@ mkdir build
   -DCMAKE_C_COMPILER=gcc ^
   -DCMAKE_CXX_COMPILER=g++ ^
   -DCMAKE_BUILD_TYPE=Debug ^
-  -DVCPKG_TARGET_TRIPLET=x64-mingw-static
+  -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic
 
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 

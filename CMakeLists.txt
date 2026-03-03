@@ -12,6 +12,9 @@ project(SyncClientCpp VERSION 0.1.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC ON)
 add_definitions(-D_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
 add_definitions(-DSQLITE_ORM_OMIT_CTE)
 
@@ -45,6 +48,9 @@ add_executable(sync_client
     src/CloudSyncWorker.cpp
     src/Utility.cpp
     src/SyncTree.cpp
+    include/SyncController.hpp
+    src/SyncController.cpp
+    src/resources.qrc
   )
 
 # Find libmagic from vcpkg
@@ -72,6 +78,9 @@ message(STATUS "sqlite3 found")
 find_package(SqliteOrm CONFIG REQUIRED) 
 message(STATUS "Sqliteorm found")
 
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Controls2)
+message(STATUS "Qt6 found")
+
 
 # Link Libraries
 if(WIN32)
@@ -87,6 +96,10 @@ if(WIN32)
         nlohmann_json::nlohmann_json 
         unofficial::sqlite3::sqlite3 
         sqlite_orm::sqlite_orm
+        Qt6::Core
+        Qt6::Gui
+        Qt6::Quick
+        Qt6::QuickControls2
       )
     else()
       target_link_libraries(sync_client PRIVATE 
@@ -98,6 +111,10 @@ if(WIN32)
         nlohmann_json::nlohmann_json 
         unofficial::sqlite3::sqlite3 
         sqlite_orm::sqlite_orm
+        Qt6::Core
+        Qt6::Gui
+        Qt6::Quick
+        Qt6::QuickControls2
       )
     endif()
 else()
@@ -109,6 +126,10 @@ else()
     nlohmann_json::nlohmann_json 
     unofficial::sqlite3::sqlite3 
     sqlite_orm::sqlite_orm
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Quick
+    Qt6::QuickControls2
   )
 endif()
 

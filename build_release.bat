@@ -14,7 +14,7 @@ mkdir build_release
   -DCMAKE_C_FLAGS="--target=x86_64-w64-windows-gnu -O3 -s" ^
   -DCMAKE_CXX_FLAGS="--target=x86_64-w64-windows-gnu -O3 -s" ^
   -DCMAKE_BUILD_TYPE=Release ^
-  -DVCPKG_TARGET_TRIPLET=x64-mingw-static
+  -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic
 
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 

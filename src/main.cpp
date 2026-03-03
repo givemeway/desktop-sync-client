@@ -7,6 +7,11 @@
 #include "SyncTree.hpp"
 #include "SyncWorker.hpp"
 #include "ThreadPool.hpp"
+#include <QGuiApplication>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
+#include "SyncController.hpp"
+
 #include <atomic>
 #include <condition_variable>
 #include <csignal>
@@ -35,7 +40,9 @@ static void signalHandler(int sig) {
 }
 
 namespace fs = std::filesystem;
-int main() {
+int main(int argc, char *argv[]) {
+  QGuiApplication app(argc, argv);
+  QQmlApplicationEngine engine;
   // register shutdown signals
 
   std::signal(SIGINT, signalHandler);
@@ -72,6 +79,15 @@ int main() {
         dbManager, apiClient, reconciliationService, scanner, syncworker,
         uploadPool, downloadPool, syncFolder, userEmail);
 
+    sync_app::SyncController syncController(cloudSync);
+    engine.rootContext()->setContextProperty("syncController", &syncController);
+
+    const QUrl url(QStringLiteral("qrc:/main.qml"));
+    engine.load(url);
+
+    if (engine.rootObjects().isEmpty())
+        return -1;
+
     std::cout << "[Main] Database initialized." << std::endl;
     std::cout << "[Main] API Client initialized." << std::endl;
 
@@ -103,13 +119,7 @@ int main() {
     std::cout << "[Main] Modify some files in the sync folder to see events."
               << std::endl;
 
-    try {
-      std::unique_lock<std::mutex> lock(cv_m);
-      cv.wait(lock, [] { return !running.load(); });
-      // Keep main alive to continue to track the sync folder
-    } catch (...) {
-      std::cout << "[Main] Exception in main thread" << std::endl;
-    }
+    return app.exec();
     std::cout << "[Main] Shutting down..." << std::endl;
     syncworker.stop();
     cloudSync.stop();

@@ -10,6 +10,9 @@
     "sqlite-orm",
     "efsw",
     "nlohmann-json",
-    "picosha2"
+    "picosha2",
+    "qtbase",
+    "qtdeclarative",
+    "qtquickcontrols2"
   ]
 }
