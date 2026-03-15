@@ -186,8 +186,8 @@ Item {
                             }
 
                             Text {
-                              text: status   // done or error or progress - 0-100% for upload/download
-                                color: status == "syncing" ? Theme.textPrimay : Theme.textSecondary
+                              text: status  == "syncing" ? meta != "folder" ? percentage : status : status // done or error or progress - 0-100% for upload/download
+                                color: status == "syncing" ? Theme.textPrimary : Theme.textSecondary
                                 font.pixelSize: 12
                                 Layout.preferredWidth: 90
                             }

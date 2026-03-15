@@ -7,6 +7,7 @@
 #include "qvariant.h"
 #include "types.hpp"
 #include <iomanip>
+#include <iostream>
 
 namespace sync_app {
 
@@ -30,6 +31,8 @@ QVariant ActivityModel::data(const QModelIndex &index, int role) const {
     return item.id;
   case NameRole:
     return item.name;
+  case PercentageRole:
+    return item.percentage;
   case PathRole:
     return item.path;
   case MetaRole:
@@ -51,6 +54,7 @@ QHash<int, QByteArray> ActivityModel::roleNames() const {
 
   return {{IdRole, "id"},
           {NameRole, "name"},
+          {PercentageRole, "percentage"},
           {PathRole, "path"},
           {MetaRole, "meta"},
           {TypeRole, "type"},
@@ -71,18 +75,17 @@ void ActivityModel::onActivityUpdated(const std::string &key,
   item.path = Utility::toQ(dp.path);
   item.meta = Utility::toQ(dp.meta);
   item.type = Utility::toQ(dp.type);
-  item.progress = dp.progress;
+  item.progress = dp.progress / 100;
   size = Utility::formatFileSize(dp.size);
   item.size = Utility::toQ(size);
 
   auto status = resolveStatus(dp.inQueue, dp.isActive, dp.isDone, dp.isError);
-  if (status == "syncing" && item.meta != "folder") {
+  if (dp.meta != "folder") {
     std::stringstream ss;
     ss << std::fixed << std::setprecision(2) << dp.progress;
-    item.status = Utility::toQ(ss.str() + "%");
-  } else {
-    item.status = status;
+    item.percentage = Utility::toQ(ss.str() + "%");
   }
+  item.status = status;
 
   if (row == -1) {
     // New item — insert row

@@ -282,6 +282,7 @@ struct SyncItem {
 struct ActivityItem {
   QString id; // unique id
   QString name;
+  QString percentage = "0%";
   QString path;
   QString meta;   // pdf doc folder
   QString type;   // upload or download or delete or rename
