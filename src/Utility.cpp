@@ -1,5 +1,7 @@
+#define STB_IMAGE_IMPLEMENTATION
 #include "Utility.hpp"
 #include "UuidUtils.hpp"
+#include "stb_image.h"
 #include "types.hpp"
 
 #ifdef _WIN32
@@ -168,5 +170,7 @@ Utility::createDirectoryMetadata(const std::string &path,
   }
   return d;
 }
+
+QString Utility::toQ(const std::string &s) { return QString::fromStdString(s); }
 
 } // namespace sync_app

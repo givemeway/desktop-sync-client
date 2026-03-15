@@ -161,7 +161,7 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
         std::string oldPath = raw.oldPath;
         try {
           mtime = fs::last_write_time(path);
-        } catch (const std::exception &e) {
+        } catch (...) {
           isAccessible = false;
         }
         auto event =
@@ -384,7 +384,7 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
                 continue;
               }
             }
-          } catch (const fs::filesystem_error &e) {
+          } catch (...) {
             // Errors like permission denied while checking mtime
             it->nextCheck = now + pollInterval;
             ++it;

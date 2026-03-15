@@ -1,10 +1,12 @@
 #pragma once
 
+#include <QString>
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <vector>
+
 namespace sync_app {
 
 enum class SyncStatus {
@@ -28,6 +30,24 @@ enum class QPriority {
   FILE_UPLOAD,
   FILE_RENAME,
   FILE_MOVED,
+  UNKNOWN
+};
+
+enum class ActivityStatus {
+  QUEUED,
+  DONE,
+  ERROR,
+  SYNCING,
+  UPLOAD,
+  DOWNLOAD,
+  LOCAL_DELETE,
+  CLOUD_DELETE,
+  LOCAL_RENAME,
+  CLOUD_RENAME,
+  LOCAL_MOVE,
+  CLOUD_MOVE,
+  LOCAL_FOLDER_CREATE,
+  CLOUD_FOLDER_CREATE,
   UNKNOWN
 };
 
@@ -223,6 +243,53 @@ struct FileUploadMetadata {
   std::string hashvalue;
 };
 
+struct DownloadProgress {
+  double progress = 0.0;
+  int64_t size = 0;
+  std::string fname;
+  std::string fpath;
+  bool isDownloading = false;
+  bool inQueue = true;
+  std::string meta;
+  bool isDownloaded = false;
+};
+
+struct UploadProgress {
+  double progress = 0.0;
+  int64_t size = 0;
+  std::string fname;
+  std::string fpath;
+  bool isUploading = false;
+  bool inQueue = true;
+  std::string meta;
+  bool isUploaded = false;
+};
+
+struct SyncItem {
+  std::string id;
+  std::string name;
+  std::string path;
+  std::string meta;
+  std::string type; // "upload" or "download"
+  double progress = 0.0;
+  int64_t size = 0;
+  bool inQueue = true;
+  bool isActive = false; // replaces isDownloading/isUploading
+  bool isDone = false;   // replaces isDownloaded/isUploaded
+  bool isError = false;  //
+};
+
+struct ActivityItem {
+  QString id; // unique id
+  QString name;
+  QString path;
+  QString meta;   // pdf doc folder
+  QString type;   // upload or download or delete or rename
+  QString status; // queued or done or error or syncing
+  double progress = 0.0;
+  QString size = "0B";
+};
+
 inline void from_json(const nlohmann::json &j, CloudFileMetadata &f) {
   f.uuid = j.value("uuid", "");
   f.dirID = j.value("dirID", "");
@@ -252,6 +319,41 @@ inline void to_json(nlohmann::json &j, const DirectoryMetadata &d) {
                      {"folder", d.folder},
                      {"path", d.path},
                      {"created_at", d.created_at}};
+}
+
+inline std::string activityToString(ActivityStatus activity) {
+  switch (activity) {
+  case ActivityStatus::DONE:
+    return "done";
+  case ActivityStatus::ERROR:
+    return "error";
+  case ActivityStatus::SYNCING:
+    return "syncing";
+  case ActivityStatus::QUEUED:
+    return "queued";
+  case ActivityStatus::UPLOAD:
+    return "upload";
+  case ActivityStatus::DOWNLOAD:
+    return "download";
+  case ActivityStatus::LOCAL_FOLDER_CREATE:
+    return "local_folder_create";
+  case ActivityStatus::CLOUD_FOLDER_CREATE:
+    return "cloud_folder_create";
+  case ActivityStatus::LOCAL_DELETE:
+    return "local_delete";
+  case ActivityStatus::CLOUD_DELETE:
+    return "cloud_delete";
+  case ActivityStatus::LOCAL_MOVE:
+    return "local_move";
+  case ActivityStatus::CLOUD_MOVE:
+    return "cloud_move";
+  case ActivityStatus::CLOUD_RENAME:
+    return "cloud_rename";
+  case ActivityStatus::LOCAL_RENAME:
+    return "local_rename";
+  case ActivityStatus::UNKNOWN:
+    return "unknown";
+  }
 }
 
 inline size_t qPriorityToInt(QPriority priority) {
@@ -342,4 +444,5 @@ inline SyncStatus stringToSyncStatus(const std::string &syncStatus) {
     return SyncStatus::MOVE_CANDIDATE;
   return SyncStatus::UNKNOWN;
 }
+
 } // namespace sync_app

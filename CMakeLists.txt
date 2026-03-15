@@ -48,9 +48,22 @@ add_executable(sync_client
     src/CloudSyncWorker.cpp
     src/Utility.cpp
     src/SyncTree.cpp
-    include/SyncController.hpp
     src/SyncController.cpp
-    src/resources.qrc
+    src/ActivityModel.cpp
+    qml/resources.qrc
+    include/ApiClient.hpp
+    include/CloudSyncWorker.hpp
+    include/DatabaseManager.hpp
+    include/FileSystemScanner.hpp
+    include/FilesystemWatcher.hpp
+    include/ReconciliationService.hpp
+    include/SyncTree.hpp
+    include/SyncWorker.hpp
+    include/ThreadPool.hpp
+    include/types.hpp
+    include/SyncController.hpp
+    include/MimeTypeDetector.hpp
+    include/ActivityModel.hpp
   )
 
 # Find libmagic from vcpkg
@@ -59,18 +72,21 @@ add_definitions(-DHAVE_LIBMAGIC)
 add_definitions(-DMAGIC_DB_PATH="${unofficial-libmagic_DICTIONARY}")
 message(STATUS "libmagic found - using content-based MIME detection")
 
-#Find  OpenCV from VCPKG 
-find_package(OpenCV REQUIRED)
-message(STATUS "OpenCV ${OpenCV_VERSION} found")
-
-#Find efsw
 find_package(efsw CONFIG REQUIRED)
 message(STATUS "EFSW found")
+
+find_package(curl CONFIG REQUIRED)
+message(STATUS "curl found")
+
+find_package(OpenSSL REQUIRED)
+message(STATUS "openssl found")
 
 find_package(nlohmann_json CONFIG REQUIRED)
 message(STATUS "nlohman-json found")
 
 find_path(PICOSHA2_INCLUDES_DIRS "picosha2.h")
+
+find_path(HTTPLIB_INCLUDES_DIRS "httplib.h")
 
 find_package(unofficial-sqlite3 CONFIG REQUIRED) 
 message(STATUS "sqlite3 found")
@@ -78,9 +94,23 @@ message(STATUS "sqlite3 found")
 find_package(SqliteOrm CONFIG REQUIRED) 
 message(STATUS "Sqliteorm found")
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Controls2)
-message(STATUS "Qt6 found")
+find_path(STB_INCLUDE_DIR "stb_image.h")
 
+foreach(VAR PICOSHA2_INCLUDES_DIRS STB_INCLUDE_DIR HTTPLIB_INCLUDES_DIRS)
+    if(NOT ${VAR}) 
+         message(STATUS "${VAR} not found")
+    else() 
+        message(STATUS "${VAR} found: ${${VAR}}")
+    endif()
+endforeach()
+
+# Ensure Qt path is searched first if provided in build script
+if(DEFINED ENV{QT_PATH})
+    set(CMAKE_PREFIX_PATH $ENV{QT_PATH} ${CMAKE_PREFIX_PATH})
+endif()
+
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Qml QuickControls2 QuickEffects)
+message(STATUS "Qt6 found")
 
 # Link Libraries
 if(WIN32)
@@ -90,63 +120,97 @@ if(WIN32)
         ws2_32 
         crypt32 
         unofficial::libmagic::libmagic 
-        ${OpenCV_LIBS} 
         pthread 
         efsw::efsw 
         nlohmann_json::nlohmann_json 
+        CURL::libcurl
         unofficial::sqlite3::sqlite3 
         sqlite_orm::sqlite_orm
         Qt6::Core
         Qt6::Gui
         Qt6::Quick
+        Qt6::Qml
         Qt6::QuickControls2
+        Qt6::QuickEffects
+        OpenSSL::SSL OpenSSL::Crypto
       )
     else()
       target_link_libraries(sync_client PRIVATE 
         ws2_32 
         crypt32 
         unofficial::libmagic::libmagic 
-        ${OpenCV_LIBS} 
         efsw::efsw 
         nlohmann_json::nlohmann_json 
+        CURL::libcurl
         unofficial::sqlite3::sqlite3 
         sqlite_orm::sqlite_orm
         Qt6::Core
         Qt6::Gui
         Qt6::Quick
+        Qt6::Qml
         Qt6::QuickControls2
+        Qt6::QuickEffects
+        OpenSSL::SSL OpenSSL::Crypto
       )
     endif()
 else()
   target_link_libraries(sync_client 
     pthread 
     unofficial::libmagic::libmagic 
-    ${OpenCV_LIBS} 
     efsw::efsw 
     nlohmann_json::nlohmann_json 
+    CURL::libcurl
     unofficial::sqlite3::sqlite3 
     sqlite_orm::sqlite_orm
     Qt6::Core
     Qt6::Gui
     Qt6::Quick
+    Qt6::Qml
     Qt6::QuickControls2
-  )
+    Qt6::QuickEffects
+    OpenSSL::SSL OpenSSL::Crypto
+)
 endif()
 
-# picosha2 is header-only, include its directory instead of linking
-target_include_directories(sync_client PRIVATE ${PICOSHA2_INCLUDES_DIRS})
+# picosha2 and stb are header-only, include their directories instead of linking
+target_include_directories(sync_client PRIVATE 
+    ${PICOSHA2_INCLUDES_DIRS}
+    ${STB_INCLUDE_DIR}
+)
 
 # Installation rules for packaging
 install(TARGETS sync_client DESTINATION bin)
+# Create qt.conf so Qt can locate QML and plugin dirs relative to the exe
+file(WRITE "${CMAKE_BINARY_DIR}/qt.conf"
+"[Paths]
+Prefix = .
+Binaries = .
+Libraries = .
+Plugins = .
+Qml2Imports = qml
+")
 
+install(FILES "${CMAKE_BINARY_DIR}/qt.conf" DESTINATION bin)
 # Copy runtime dependencies (DLLs on Windows, .so on Linux, .dylib on macOS)
 if(WIN32)
-    # Copy libmagic DLL
+    # 1. Copy libmagic DLL
     install(FILES $<TARGET_FILE:unofficial::libmagic::libmagic> DESTINATION bin)
-   
-    # Copy OpenCV DLLs 
-    if(OpenCV_RUNTIME_LIBRARIES)
-        install(FILES ${OpenCV_RUNTIME_LIBRARIES} DESTINATION bin)
+    
+    # 2. Run windeployqt for Qt dependencies
+    get_target_property(_qt_bin_dir Qt6::Core LOCATION)
+    get_filename_component(_qt_bin_dir "${_qt_bin_dir}" DIRECTORY)
+    find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${_qt_bin_dir}")
+
+    if(WINDEPLOYQT_EXECUTABLE)
+        add_custom_command(TARGET sync_client POST_BUILD
+            COMMAND "${WINDEPLOYQT_EXECUTABLE}"
+                    --no-compiler-runtime
+                    --no-opengl-sw
+                    --no-translations
+                    --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/qml"
+                    "$<TARGET_FILE:sync_client>"
+            COMMENT "Deploying Qt dependencies with windeployqt..."
+        )
     endif()
 
     # Copy magic database files for libmagic

@@ -1,43 +1,62 @@
 #include "SyncController.hpp"
+#include "ActivityModel.hpp"
+#include "CloudSyncWorker.hpp"
+#include "SyncWorker.hpp"
 #include <QDebug>
+#include <QString>
+#include <QVariantList>
 
 namespace sync_app {
 
-SyncController::SyncController(CloudSyncWorker& engine, QObject *parent)
-    : QObject(parent), m_engine(engine), m_status("Initializing..."), m_progress(0.0) {
-    // In a real implementation, we would connect signals from m_engine to our refresh slot
+SyncController *SyncController::m_instance = nullptr;
+
+SyncController::SyncController(CloudSyncWorker *syncEngine,
+                               SyncWorker *syncWorker, QObject *parent)
+    : QObject(parent), m_cloudSyncWorker(syncEngine), m_syncWorker(syncWorker) {
+
+  m_activityModel = new ActivityModel(this);
+
+  // CloudSyncWorker → ActivityModel
+  connect(m_cloudSyncWorker, &CloudSyncWorker::activityUpdated, m_activityModel,
+          &ActivityModel::onActivityUpdated);
+
+  connect(m_cloudSyncWorker, &CloudSyncWorker::activityRemoved, m_activityModel,
+          &ActivityModel::onActivityRemoved);
+
+  connect(m_cloudSyncWorker, &CloudSyncWorker::activityAdded, m_activityModel,
+          &ActivityModel::onActivityAdded);
+
+  connect(m_syncWorker, &SyncWorker::activityAdded, m_activityModel,
+          &ActivityModel::onActivityAdded);
+
+  // CloudSyncWorker → SyncController state
+  connect(m_cloudSyncWorker, &CloudSyncWorker::syncStarted, this,
+          &SyncController::onSyncStarted);
+
+  connect(m_cloudSyncWorker, &CloudSyncWorker::syncStopped, this,
+          &SyncController::onSyncFinished);
+
+  connect(m_cloudSyncWorker, &CloudSyncWorker::errorOccurred, this,
+          &SyncController::onErrorOccurred);
 }
 
-QString SyncController::status() const {
-    return m_status;
+void SyncController::onSyncStarted() {
+  m_isSyncing = true;
+  emit isSyncingChanged();
 }
 
-double SyncController::progress() const {
-    return m_progress;
+void SyncController::onSyncFinished() {
+  m_isSyncing = false;
+  emit isSyncingChanged();
 }
 
-QVariantList SyncController::recentActivity() const {
-    return m_activity;
+void SyncController::onErrorOccurred(const QString &message) {
+  qWarning() << "Sync error:" << message;
 }
 
-void SyncController::refresh() {
-    // Pull latest data from engine without modifying it
-    // m_status = m_engine.getCurrentStatus(); 
-    emit statusChanged();
-    emit progressChanged();
-    emit activityChanged();
-}
-
-void SyncController::startSync() {
-    // m_engine.start();
-    m_status = "Syncing...";
-    emit statusChanged();
-}
-
-void SyncController::stopSync() {
-    // m_engine.stop();
-    m_status = "Stopped";
-    emit statusChanged();
-}
+void SyncController::startSync() {}
+void SyncController::pauseSync() { /* pause logic */ }
+void SyncController::uploadFile(const QString &path) {}
+void SyncController::deleteFile(const QString &path) {}
 
 } // namespace sync_app

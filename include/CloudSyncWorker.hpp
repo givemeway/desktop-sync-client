@@ -1,3 +1,6 @@
+#pragma once
+#include "qobject.h"
+#include "qtmetamacros.h"
 #include "types.hpp"
 #include <atomic>
 #include <condition_variable>
@@ -11,14 +14,20 @@ class FileSystemScanner;
 class SyncWorker;
 class ReconciliationService;
 class ThreadPool;
+struct ActivityStore;
 
-class CloudSyncWorker {
+class CloudSyncWorker : public QObject {
+  Q_OBJECT
 public:
-  CloudSyncWorker(DatabaseManager &dbManager, ApiClient &apiClient,
-                  ReconciliationService &reconcile, FileSystemScanner &scanner,
-                  SyncWorker &syncWorker, ThreadPool &uploadThreadPool,
-                  ThreadPool &downloadThreadPool, const std::string &syncPath,
-                  const std::string &userEmail);
+  explicit CloudSyncWorker(DatabaseManager &dbManager, ApiClient &apiClient,
+                           ReconciliationService &reconcile,
+                           FileSystemScanner &scanner, SyncWorker &syncWorker,
+                           ActivityStore &activityStore,
+                           ThreadPool &uploadThreadPool,
+                           ThreadPool &downloadThreadPool,
+                           const std::string &syncPath,
+                           const std::string &userEmail,
+                           QObject *parent = nullptr);
   ~CloudSyncWorker();
   void start();
   void stop();
@@ -26,6 +35,7 @@ public:
 private:
   DatabaseManager &m_dbManager;
   ApiClient &m_apiClient;
+  ActivityStore &m_activityStore;
   ReconciliationService &m_reconcile;
   FileSystemScanner &m_scanner;
   SyncWorker &m_syncWorker;
@@ -42,7 +52,7 @@ private:
   std::mutex m_syncDownMutex;
   std::mutex m_syncUpMutex;
   std::condition_variable m_syncCV;
-  std::atomic<int> m_tasksPending = 0;
+  std::atomic<size_t> m_tasksPending = 0;
   std::atomic<int> m_upSyncTasks = 0;
   std::condition_variable m_tasksCV;
   std::mutex m_tasksPendingMutex;
@@ -103,6 +113,27 @@ private:
   std::optional<bool> renameFile(ApiClient &client, const FileQueueEntry &fq);
 
   std::optional<bool> moveFile(ApiClient &client, const FileQueueEntry &fq);
+
+  void updateActivityMap(ReconciliationResult &result);
+
+  void updateActivity(const std::string &key, const SyncItem &item);
+
+  void addActivity(const std::string &key, const SyncItem &item);
+
+  void removeActivity(const std::string &key);
+
+  void initActivityAndPriorityQ();
+
+  std::optional<std::vector<DirectoryMetadata>>
+  getFileDirTree(const FileQueueEntry &fq);
+
+signals:
+  void activityAdded(const std::string &key, const SyncItem &item);
+  void activityUpdated(const std::string &key, const SyncItem &item);
+  void activityRemoved(const std::string &key);
+  void syncStarted();
+  void syncStopped();
+  void errorOccurred(const QString &message);
 };
 
 } // namespace sync_app

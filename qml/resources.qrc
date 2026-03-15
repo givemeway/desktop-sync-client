@@ -1,0 +1,11 @@
+<RCC>
+    <qresource prefix="/">
+        <file>main.qml</file>
+        <file>AuraUI/Theme.qml</file>
+        <file>AuraUI/DashboardView.qml</file>
+        <file>AuraUI/ActivityView.qml</file>
+        <file>AuraUI/ExplorerView.qml</file>
+        <file>AuraUI/SettingsView.qml</file>
+        <file>AuraUI/qmldir</file>
+    </qresource>
+</RCC>

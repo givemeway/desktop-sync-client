@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <openssl/evp.h>
+#include <openssl/sha.h>
 #include <unordered_map>
 #include <vector>
 
@@ -90,9 +92,35 @@ std::string FileSystemScanner::calculateHash(const std::string &absPath) {
   if (!f.is_open())
     return "";
 
-  std::vector<unsigned char> hash(picosha2::k_digest_size);
-  picosha2::hash256(f, hash.begin(), hash.end());
-  return picosha2::bytes_to_hex_string(hash.begin(), hash.end());
+  // ── OpenSSL EVP context ───────────────────────────────────────
+  EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+  EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
+
+  // ── Read and hash in chunks ───────────────────────────────────
+  constexpr size_t CHUNK = 65536; // 64KB chunks
+  std::vector<char> buffer(CHUNK);
+
+  while (f.read(buffer.data(), CHUNK) || f.gcount() > 0) {
+    EVP_DigestUpdate(ctx, buffer.data(), f.gcount());
+  }
+
+  // ── Finalize ──────────────────────────────────────────────────
+  unsigned char hash[EVP_MAX_MD_SIZE];
+  unsigned int hashLen = 0;
+  EVP_DigestFinal_ex(ctx, hash, &hashLen);
+  EVP_MD_CTX_free(ctx);
+
+  // ── Convert to hex string ─────────────────────────────────────
+  std::ostringstream oss;
+  for (unsigned int i = 0; i < hashLen; i++) {
+    oss << std::hex << std::setw(2) << std::setfill('0')
+        << static_cast<int>(hash[i]);
+  }
+  return oss.str();
+  /*  std::vector<unsigned char> hash(picosha2::k_digest_size);
+    picosha2::hash256(f, hash.begin(), hash.end());
+    return picosha2::bytes_to_hex_string(hash.begin(), hash.end());
+  */
 }
 
 std::int64_t
@@ -160,7 +188,7 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
     result.files.reserve(fileTasks.size());
     for (auto &task : fileTasks) {
       task.file.hash = task.hashFuture.get();
-      result.files.push_back(task.file);
+      result.files.push_back(std::move(task.file));
     }
   } catch (const std::exception &e) {
     std::cerr << "FileSystem Error: " << e.what() << std::endl;

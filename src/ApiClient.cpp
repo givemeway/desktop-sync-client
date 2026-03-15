@@ -1,6 +1,7 @@
 #include "ApiClient.hpp"
 #include "MimeTypeDetector.hpp"
 #include "httplib.h"
+#include <curl/curl.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -35,11 +36,58 @@ std::string urlEncode(const std::string &value) {
 
 struct ApiClient::Impl {
   httplib::Client client;
+  CURLM *curlMulti;
+
   Impl(const std::string &baseUrl) : client(baseUrl) {
     client.set_connection_timeout(30, 0);
     client.set_read_timeout(30, 0);
     client.set_write_timeout(30, 0);
     client.set_follow_location(true);
+
+    curl_global_init(CURL_GLOBAL_ALL);
+    curlMulti = curl_multi_init();
+  }
+
+  ~Impl() {
+    curl_easy_cleanup(curlMulti);
+    curl_global_cleanup();
+  }
+
+  // ── Creates a fresh easy handle per transfer ──────────────────
+  CURL *createHandle(const std::string &url) {
+    CURL *handle = curl_easy_init();
+    curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, 30L);
+    curl_easy_setopt(handle, CURLOPT_TIMEOUT, 0L);
+    return handle;
+  }
+
+  // ── Returns CURLcode so caller can check it ───────────────────
+  CURLcode perform(CURL *handle) {
+    curl_multi_add_handle(curlMulti, handle);
+
+    int stillRunning = 0;
+    do {
+      curl_multi_perform(curlMulti, &stillRunning);
+      curl_multi_wait(curlMulti, nullptr, 0, 100, nullptr);
+    } while (stillRunning);
+
+    curl_multi_remove_handle(curlMulti, handle);
+
+    // ── Get result from the completed transfer ────────────────
+    CURLcode result = CURLE_OK;
+    CURLMsg *msg = nullptr;
+    int msgsLeft = 0;
+
+    while ((msg = curl_multi_info_read(curlMulti, &msgsLeft))) {
+      if (msg->msg == CURLMSG_DONE && msg->easy_handle == handle) {
+        result = msg->data.result; // ← actual curl result
+        break;
+      }
+    }
+
+    return result;
   }
 };
 
@@ -77,6 +125,7 @@ std::vector<std::string> ApiClient::getPathComponents(const std::string &path) {
 }
 
 std::tuple<std::vector<CloudFileMetadata>, std::vector<CloudFolderMetadata>>
+
 ApiClient::getDirIDs(const std::vector<CloudFileMetadata> &cloudFiles,
                      const std::vector<CloudFolderMetadata> &cloudDirs) {
   std::map<std::string, std::string> dirIDMap;
@@ -162,6 +211,7 @@ std::optional<CloudMetadataResult> ApiClient::getMetadata() {
 
 bool ApiClient::downloadFile(const CloudFileMetadata &file,
                              const std::string &localAbsPath) {
+
   std::cout << "[API] Starting download for: " << file.filename << " -> \n";
   auto parts = parsePath(file.path);
   std::string mtime;
@@ -207,7 +257,9 @@ bool ApiClient::downloadFile(const CloudFileMetadata &file,
         ofs.write(data, data_length);
         return true;
       });
+
   ofs.close();
+
   bool success = res && res->status == 200;
   if (success) {
     std::cout << "[API] Download successful for: " << file.filename << "\n";
@@ -215,6 +267,80 @@ bool ApiClient::downloadFile(const CloudFileMetadata &file,
     std::cerr << "[API] Download failed for: " << file.filename << "\n";
   }
   return success;
+}
+
+bool ApiClient::downloadFile(const CloudFileMetadata &file,
+                             const std::string &localAbsPath,
+                             ProgressCallBack onProgress) {
+  auto parts = parsePath(file.path);
+
+  std::string url =
+      m_baseUrl + "/app/sync/syncDownFile?file=" + urlEncode(file.filename) +
+      "&dir=" + urlEncode(parts.directory) +
+      "&device=" + urlEncode(parts.device) + "&uuid=" + urlEncode(file.uuid) +
+      "&db=file&username=" + urlEncode(m_userEmail);
+
+  std::ofstream ofs(localAbsPath, std::ios::binary);
+  if (!ofs) {
+    std::cerr << "[API] Failed to open file: " << localAbsPath << "\n";
+    return false;
+  }
+
+  // ── Progress state ────────────────────────────────────────────
+  struct ProgressData {
+    ProgressCallBack callback;
+    std::string key;
+  };
+  ProgressData progressData{onProgress, file.uuid};
+
+  // ── Write callback ────────────────────────────────────────────
+  auto writeCallback = [](void *ptr, size_t size, size_t nmemb,
+                          void *userdata) -> size_t {
+    auto *ofs = static_cast<std::ofstream *>(userdata);
+    ofs->write(static_cast<const char *>(ptr), size * nmemb);
+    return size * nmemb;
+  };
+
+  // ── Progress callback ─────────────────────────────────────────
+  auto progressCallback = [](void *userdata, curl_off_t dltotal,
+                             curl_off_t dlnow, curl_off_t, curl_off_t) -> int {
+    if (dltotal <= 0)
+      return 0;
+    auto *pd = static_cast<ProgressData *>(userdata);
+    double progress = (double)dlnow / (double)dltotal * 100.0;
+    if (pd->callback)
+      pd->callback(pd->key, progress);
+    return 0;
+  };
+
+  // ── One easy handle per transfer — added to multi ─────────────
+  CURL *handle = m_impl->createHandle(url);
+
+  curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, +writeCallback);
+  curl_easy_setopt(handle, CURLOPT_WRITEDATA, &ofs);
+  curl_easy_setopt(handle, CURLOPT_XFERINFOFUNCTION, +progressCallback);
+  curl_easy_setopt(handle, CURLOPT_XFERINFODATA, &progressData);
+  curl_easy_setopt(handle, CURLOPT_NOPROGRESS, 0L);
+
+  CURLcode curlResult = m_impl->perform(handle); // runs transfer
+
+  long httpCode = 0;
+  curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &httpCode);
+  curl_easy_cleanup(handle); // clean up this transfer's handle
+  ofs.close();
+
+  // ── Check both curl result AND http status ────────────────────
+  if (curlResult != CURLE_OK) {
+    std::cerr << "[API] Curl error: " << curl_easy_strerror(curlResult) << "\n";
+    return false;
+  }
+
+  if (httpCode != 200) {
+    std::cerr << "[API] HTTP error: " << httpCode << "\n";
+    return false;
+  }
+
+  return true;
 }
 
 bool ApiClient::uploadFile(const FileQueueEntry &file,
@@ -263,7 +389,8 @@ bool ApiClient::uploadFile(const FileQueueEntry &file,
           filestat["height"] = maybeDims->height;
           filestat["width"] = maybeDims->width;
         } else {
-          filestat["type"] = "file";
+          filestat["height"] = 0;
+          filestat["width"] = 0;
         }
       }
     } else {
@@ -277,6 +404,136 @@ bool ApiClient::uploadFile(const FileQueueEntry &file,
     auto res = m_impl->client.Post("/app/sync/syncUpFile", headers, items);
 
     return res && res->status == 200;
+  } catch (const std::exception &e) {
+    std::cerr << "[API] " << e.what() << "\n";
+    return false;
+  }
+}
+
+bool ApiClient::uploadFile(const FileQueueEntry &file,
+                           const std::vector<DirectoryMetadata> &pathIds,
+                           bool isModified, ProgressCallBack onProgress) {
+  try {
+    // ── Don't read file into memory — let curl handle it ──────
+    // just check it exists and get size
+    std::ifstream testFile(file.absPath, std::ios::binary | std::ios::ate);
+    if (!testFile) {
+      std::cerr << "[API] Failed to open: " << file.absPath << "\n";
+      return false;
+    }
+    std::streamsize fileSize = testFile.tellg();
+    testFile.close(); // close immediately — curl will open it
+
+    // ── Build filestat ────────────────────────────────────────
+    auto parts = parsePath(file.path);
+    json filestat;
+    filestat["filename"] = file.filename;
+    filestat["directory"] = parts.directory;
+    filestat["device"] = parts.device;
+    filestat["uuid"] = file.uuid;
+    filestat["origin"] = file.origin;
+    filestat["checksum"] = file.hashvalue;
+    filestat["size"] = file.size;
+    filestat["mtime"] = file.last_modified;
+    filestat["username"] = m_userEmail;
+    filestat["version"] = file.versions;
+    filestat["isModified"] = isModified;
+    if (!isModified)
+      filestat["pathids"] = pathIds;
+
+    MimeTypeDetector detector;
+    std::string detectedMime = detector.getMimeType(file.absPath);
+    magic_t magicCookie = *detector.getMagicCookie();
+    if (!detectedMime.empty()) {
+      filestat["type"] = detectedMime;
+      if (detectedMime.starts_with("image/")) {
+        auto maybeDims = detector.getImageDims(file.absPath, magicCookie);
+        if (maybeDims.has_value()) {
+          filestat["height"] = maybeDims->height;
+          filestat["width"] = maybeDims->width;
+        } else {
+          filestat["height"] = 0;
+          filestat["width"] = 0;
+        }
+      }
+    } else {
+      filestat["type"] = "file";
+    }
+
+    // ── Progress state ────────────────────────────────────────
+    struct ProgressData {
+      ProgressCallBack callback;
+      std::string key;
+    };
+
+    ProgressData progressData{onProgress, file.uuid};
+
+    auto progressCallback = [](void *userdata, curl_off_t, curl_off_t,
+                               curl_off_t ultotal, curl_off_t ulnow) -> int {
+      if (ultotal <= 0)
+        return 0;
+      auto *pd = static_cast<ProgressData *>(userdata);
+      if (pd->callback)
+        pd->callback(pd->key, (double)ulnow / (double)ultotal * 100.0);
+      return 0;
+    };
+
+    auto discardResponseBody = [](void *ptr, size_t size, size_t nmemb,
+                                  void *userdata) {
+      return size * nmemb; // discard
+    };
+
+    // ── Build multipart form ──────────────────────────────────
+    std::string url = m_baseUrl + "/app/sync/syncUpFile";
+    CURL *handle = m_impl->createHandle(url);
+
+    curl_mime *mime = curl_mime_init(handle);
+    curl_mimepart *part = curl_mime_addpart(mime);
+    curl_mime_name(part, "file");
+
+    // read file in chunks
+    curl_mime_filedata(part, file.absPath.c_str());
+    curl_mime_filename(part, file.filename.c_str());
+    curl_mime_type(part, "application/octet-stream");
+
+    // ── Headers ───────────────────────────────────────────────
+    struct curl_slist *headers = nullptr;
+    std::string filestatHeader = "filestat: " + filestat.dump();
+    headers = curl_slist_append(headers, filestatHeader.c_str());
+
+    // ── Set options ───────────────────────────────────────────
+    curl_easy_setopt(handle, CURLOPT_MIMEPOST, mime);
+    curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(handle, CURLOPT_XFERINFOFUNCTION, +progressCallback);
+    curl_easy_setopt(handle, CURLOPT_XFERINFODATA, &progressData);
+    curl_easy_setopt(handle, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION,
+                     +discardResponseBody); // ← add
+                                            //
+    // ── Run transfer ──────────────────────────────────────────
+    CURLcode curlResult = m_impl->perform(handle);
+
+    long httpCode = 0;
+    curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &httpCode);
+
+    curl_mime_free(mime);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(handle);
+
+    if (curlResult != CURLE_OK) {
+      std::cerr << "[API] Curl error: " << curl_easy_strerror(curlResult)
+                << "\n";
+      return false;
+    }
+
+    if (httpCode != 200) {
+      std::cerr << "[API] HTTP error: " << httpCode << "\n";
+      return false;
+    }
+
+    std::cout << "[API] Upload complete: " << file.filename << "\n";
+    return true;
+
   } catch (const std::exception &e) {
     std::cerr << "[API] " << e.what() << "\n";
     return false;
@@ -307,16 +564,22 @@ bool ApiClient::deleteFile(const FileQueueEntry &file) {
   return res && res->status == 200;
 }
 
-bool ApiClient::renameFile(const FileQueueEntry &file) {
-  auto parts = parsePath(file.path);
+bool ApiClient::renameFile(const FileQueueEntry &file,
+                           const std::vector<DirectoryMetadata> &dirTree) {
+  auto op = parsePath(file.old_path.value());
+  auto np = parsePath(file.path);
   json innerData;
   innerData["type"] = "fi";
-  innerData["dir"] = parts.directory;
-  innerData["device"] = parts.device;
-  innerData["filename"] = file.old_filename.value_or("");
-  innerData["to"] = file.filename;
+  innerData["dir"] = np.directory;
+  innerData["device"] = np.device;
+  innerData["filename"] = file.filename;
+  innerData["old_filename"] = file.old_filename.value_or("");
   innerData["origin"] = file.origin;
+  innerData["old_dir"] = op.directory;
+  innerData["old_device"] = op.device;
   innerData["username"] = m_userEmail;
+  innerData["id"] = file.dirID;
+  innerData["pathIds"] = dirTree;
 
   json outerData;
   outerData["data"] = innerData;

@@ -145,7 +145,7 @@ std::optional<std::vector<FileMetadata>> DatabaseManager::getAllFiles() {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.get_all<FileMetadata>();
-  } catch (const std::exception &e) {
+  } catch (...) {
     return std::nullopt;
   }
 }
@@ -154,7 +154,7 @@ std::optional<std::vector<FileQueueEntry>> DatabaseManager::getAllQueueFiles() {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.get_all<FileQueueEntry>();
-  } catch (std::exception &e) {
+  } catch (...) {
     std::cerr << "[DB] " << std::endl;
     return std::nullopt;
   }
@@ -181,7 +181,7 @@ DatabaseManager::getFileByPath(const std::string &path,
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.get<FileMetadata>(path, filename);
-  } catch (const std::exception &e) {
+  } catch (...) {
     return std::nullopt;
   }
 }
@@ -254,7 +254,34 @@ bool DatabaseManager::insertFile(const FileMetadata &file,
     return false;
   }
 }
-
+bool DatabaseManager::renameFile(const FileMetadata &file,
+                                 const FileQueueEntry &fileQueue) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  try {
+    return m_impl->storage.transaction([&]() {
+      DirectoryQueueEntry dq;
+      pathParts p = getFolderDevice(std::filesystem::path(file.path));
+      try {
+        auto dir = m_impl->storage.get<DirectoryMetadata>(p.device, p.folder,
+                                                          file.path);
+        dq =
+            Utility::constructDirectoryQueueEntry(dir, SyncStatus::FILE_LINKED);
+      } catch (const std::exception &e) {
+        std::cerr << "[DB] " << e.what() << " device: " << p.device
+                  << " path: " << file.path << std::endl;
+        return false;
+      }
+      m_impl->storage.replace<DirectoryQueueEntry>(dq);
+      m_impl->storage.replace<FileMetadata>(file);
+      m_impl->storage.replace<FileQueueEntry>(fileQueue);
+      return true;
+    });
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error Inserting ->" << file.absPath
+              << " into File Table =>" << e.what() << std::endl;
+    return false;
+  }
+}
 bool DatabaseManager::updateFile(const FileMetadata &file) {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
@@ -306,7 +333,7 @@ bool DatabaseManager::deleteFile(const std::string &path,
         dq = Utility::constructDirectoryQueueEntry(dir);
         dq.old_path = fq.old_path;
         dq.sync_status = syncStatusToString(SyncStatus::FILE_LINKED);
-      } catch (const std::exception &e) {
+      } catch (const std::exception &) {
         return false;
       }
       m_impl->storage.remove<FileMetadata>(path, filename);
@@ -366,7 +393,7 @@ DatabaseManager::getAllDirectories() {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.get_all<DirectoryMetadata>();
-  } catch (const std::exception &e) {
+  } catch (...) {
     return std::nullopt;
   }
 }
@@ -377,7 +404,7 @@ DatabaseManager::getAllDirsInPath(const std::string &path) {
     return m_impl->storage.get_all<DirectoryMetadata>(
         where(c(&DirectoryMetadata::path) == path) ||
         like(&DirectoryMetadata::path, path + "/%"));
-  } catch (const std::exception &e) {
+  } catch (...) {
     return std::nullopt;
   }
 }
@@ -450,6 +477,21 @@ DatabaseManager::getFilesInDirectory(const std::string &path) {
     std::cerr << "[DB] Error fetching from ->" << path << " " << e.what()
               << std::endl;
     return {};
+  }
+}
+
+std::optional<std::vector<FileQueueEntry>>
+DatabaseManager::getFilesInDirQ(const std::string &path) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  try {
+
+    return m_impl->storage.get_all<FileQueueEntry>(
+        where(c(&FileQueueEntry::path) == path) ||
+        like(&FileQueueEntry::path, path + "%"));
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] Error fetching from ->" << path << " " << e.what()
+              << std::endl;
+    return std::nullopt;
   }
 }
 
@@ -944,7 +986,7 @@ bool DatabaseManager::moveFile(const FileMetadata &f,
     });
 
   } catch (const std::exception &e) {
-    std::cout << "[DB] unable to rename the file ->" << e.what() << std::endl;
+    std::cout << "[DB] unable to move the file ->" << e.what() << std::endl;
     return false;
   }
 }
@@ -1030,7 +1072,7 @@ bool DatabaseManager::updateMovedFile(const FileQueueEntry &fq,
       return true;
     });
 
-  } catch (const std::exception &e) {
+  } catch (...) {
 
     return false;
   }
@@ -1055,7 +1097,7 @@ bool DatabaseManager::insertFileAndQueueWithDirectory(
             cloudFile.path, cloudFile.filename);
         m_impl->storage.remove<FileQueueEntry>(cloudFile.path,
                                                cloudFile.filename);
-      } catch (const std::exception &) {
+      } catch (...) {
         std::cout << "[DB] modified file not in queue..do nothing"
                   << cloudFile.absPath << std::endl;
       }
@@ -1286,7 +1328,7 @@ std::optional<std::vector<FileQueueEntry>> DatabaseManager::getFileQueue() {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     return m_impl->storage.get_all<FileQueueEntry>();
-  } catch (const std::exception &e) {
+  } catch (...) {
     return std::nullopt;
   }
 }
@@ -1478,7 +1520,7 @@ bool DatabaseManager::insertFilesAndDirectories(const DirectoryMetadata &dir,
       return true;
     });
 
-  } catch (const std::exception &e) {
+  } catch (...) {
     return false;
   }
 }

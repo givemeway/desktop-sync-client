@@ -1,9 +1,9 @@
 #pragma once
 
+#include "stb_image.h"
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
-#include <opencv2/opencv.hpp>
 #include <string>
 #include <unordered_map>
 #ifdef HAVE_LIBMAGIC
@@ -82,7 +82,8 @@ private:
     return mimeTypes;
   }
 
-  std::string getMimeByExtension(const std::string &filepath) {
+public:
+  std::string static getMimeByExtension(const std::string &filepath) {
     std::filesystem::path p(filepath);
     std::string ext = p.extension().string();
 
@@ -163,16 +164,20 @@ public:
       return std::nullopt;
     }
     std::cout << "[MIME] Image Detected:" << mimeType << std::endl;
-    cv::Mat image = cv::imread(filepath);
-    if (image.empty()) {
+    int width, height, channels;
+    unsigned char *img_data =
+        stbi_load(filepath.c_str(), &width, &height, &channels, 0);
+    if (!img_data) {
       std::cerr << "[MIME] Failed to Load Image: " << filepath << std::endl;
       return std::nullopt;
     }
     ImageDimensions dims;
-    dims.width = image.cols;
-    dims.height = image.rows;
+    dims.width = width;
+    dims.height = height;
     std::cout << "[IMAGE] " << filepath << " : " << dims.width << "x"
               << dims.height << std::endl;
+    stbi_image_free(img_data);
+
     return dims;
   }
 };

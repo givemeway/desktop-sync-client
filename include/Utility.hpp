@@ -1,11 +1,15 @@
 #pragma once
 #include "DatabaseManager.hpp"
 #include "types.hpp"
+#include <QString>
+#include <cstdint>
 #include <filesystem>
+#include <type_traits>
 namespace sync_app {
 
 class Utility {
 public:
+  QString static toQ(const std::string &s);
   FileQueueEntry static constructFileQueueEntry(
       const FileMetadata &f, SyncStatus status = SyncStatus::NEW,
       std::string &&old_path = "", std::string &&old_filename = "");
@@ -513,6 +517,127 @@ public:
       return a.priority > b.priority;
     }
   };
+
+  template <typename T>
+  SyncItem static convertToActivity(const T &v, const ActivityStatus &status) {
+    SyncItem a;
+    std::string meta;
+    std::string path;
+    std::string name;
+    int64_t size = 0;
+    if constexpr (std::is_same_v<T, CloudFileMetadata> ||
+                  std::is_same_v<T, FileMetadata> ||
+                  std::is_same_v<T, FileQueueEntry>) {
+
+      path = v.path == "/" ? "/" + v.filename : v.path + "/" + v.filename;
+      meta = std::filesystem::path(path).extension().string();
+      name = v.filename;
+      size = v.size;
+    } else {
+      path = v.path;
+      meta = "folder";
+      name = v.folder;
+      size = 0;
+    }
+
+    a.id = v.uuid;
+    a.name = name;
+    a.path = path;
+    a.meta = meta;
+    a.type = activityToString(status);
+    a.inQueue = true;
+    a.isError = false;
+    a.isActive = false;
+    a.isDone = false;
+    a.size = size;
+    a.progress = 0.0;
+    return a;
+  }
+
+  template <typename T>
+  auto static convertToActivity(const std::vector<T> &t,
+                                const ActivityStatus &status) {
+
+    std::vector<SyncItem> activity;
+
+    for (const auto &v : t) {
+      SyncItem a = convertToActivity(v, status);
+      activity.push_back(a);
+    }
+
+    return activity;
+  }
+
+  template <typename T>
+  static std::optional<ActivityStatus> resolveActivityStatus(T &t) {
+
+    if constexpr (std::is_same_v<T, FileQueueEntry>) {
+      SyncStatus syncStatus = stringToSyncStatus(t.sync_status);
+      switch (syncStatus) {
+      case SyncStatus::NEW:
+        return ActivityStatus::UPLOAD;
+      case SyncStatus::DELETE:
+        return ActivityStatus::CLOUD_DELETE;
+      case SyncStatus::RENAME:
+        return ActivityStatus::CLOUD_RENAME;
+      case SyncStatus::MOVED:
+        return ActivityStatus::CLOUD_MOVE;
+      default:
+        return std::nullopt;
+      }
+    }
+    if constexpr (std::is_same_v<T, DirectoryQueueEntry>) {
+      SyncStatus syncStatus = stringToSyncStatus(t.sync_status);
+      switch (syncStatus) {
+      case SyncStatus::NEW:
+        return ActivityStatus::CLOUD_FOLDER_CREATE;
+      case SyncStatus::DELETE:
+        return ActivityStatus::CLOUD_DELETE;
+      case SyncStatus::RENAME:
+        return ActivityStatus::CLOUD_RENAME;
+      case SyncStatus::MOVED:
+        return ActivityStatus::CLOUD_MOVE;
+      default:
+        return std::nullopt;
+      }
+    }
+  }
+
+  static std::string formatFileSize(int64_t bytes) {
+    enum class SizeUnits : int64_t {
+      KB = 1024LL,
+      MB = KB * 1000LL,
+      GB = MB * 1000LL,
+      TB = GB * 1000LL,
+      PB = TB * 1000LL,
+    };
+    double size;
+    std::string unit;
+
+    if (bytes >= static_cast<int64_t>(SizeUnits::PB)) {
+      size = (double)bytes / static_cast<int64_t>(SizeUnits::PB);
+      unit = "PB";
+    } else if (bytes >= static_cast<int64_t>(SizeUnits::TB)) {
+      size = (double)bytes / static_cast<int64_t>(SizeUnits::TB);
+      unit = "TB";
+    } else if (bytes >= static_cast<int64_t>(SizeUnits::GB)) {
+      size = (double)bytes / static_cast<int64_t>(SizeUnits::GB);
+      unit = "GB";
+    } else if (bytes >= static_cast<int64_t>(SizeUnits::MB)) {
+      size = (double)bytes / static_cast<int64_t>(SizeUnits::MB);
+      unit = "MB";
+    } else if (bytes >= static_cast<int64_t>(SizeUnits::KB)) {
+      size = (double)bytes / static_cast<int64_t>(SizeUnits::KB);
+      unit = "KB";
+    } else {
+      return std::to_string(bytes) + " B";
+    }
+
+    // ── Format to 2 decimal places ────────────────────────────────
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2) << size << " " << unit;
+    return oss.str();
+  }
 };
 
 } // namespace sync_app

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "types.hpp"
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -8,6 +9,8 @@
 #include <vector>
 namespace sync_app {
 
+using ProgressCallBack =
+    std::function<void(const std::string &key, double progress)>;
 /**
  * ApiClient handles communication with the sync server.
  * Uses cpp-httplib for networking and nlohmann/json for serialization.
@@ -17,19 +20,27 @@ public:
   ApiClient(const std::string &baseUrl, const std::string &userEmail);
   ~ApiClient();
 
-  // Metadata fetching
   std::optional<CloudMetadataResult> getMetadata();
 
-  // File operations
   std::unique_ptr<ApiClient> clone() const;
   bool downloadFile(const CloudFileMetadata &file,
                     const std::string &localAbsPath);
+  // downloadFile overload to not break existing app using httplib for download
+  bool downloadFile(const CloudFileMetadata &file,
+                    const std::string &localAbsPath,
+                    ProgressCallBack onProgress);
+
   bool uploadFile(const FileQueueEntry &file,
                   const std::vector<DirectoryMetadata> &pathIds =
                       std::vector<DirectoryMetadata>(),
                   bool isModified = false);
+  bool uploadFile(const FileQueueEntry &file,
+                  const std::vector<DirectoryMetadata> &pathIds,
+                  bool isModified, ProgressCallBack onProgress);
+
   bool deleteFile(const FileQueueEntry &file);
-  bool renameFile(const FileQueueEntry &file);
+  bool renameFile(const FileQueueEntry &file,
+                  const std::vector<DirectoryMetadata> &dirTree);
   bool moveFile(const FileQueueEntry &file);
 
   // Directory operations

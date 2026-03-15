@@ -1,4 +1,5 @@
 #include "CloudSyncWorker.hpp"
+#include "ActivityStore.hpp"
 #include "ApiClient.hpp"
 #include "DatabaseManager.hpp"
 #include "FileSystemScanner.hpp"
@@ -8,6 +9,7 @@
 #include "ThreadPool.hpp"
 #include "Utility.hpp"
 #include "UuidUtils.hpp"
+#include "qobject.h"
 #include "types.hpp"
 #include <chrono>
 #include <exception>
@@ -18,22 +20,93 @@
 #include <sstream>
 #include <thread>
 namespace fs = std::filesystem;
-
 namespace sync_app {
 
 CloudSyncWorker::CloudSyncWorker(
-
     DatabaseManager &dbManager, ApiClient &apiClient,
     ReconciliationService &reconcile, FileSystemScanner &scanner,
-    SyncWorker &syncWorker, ThreadPool &uploadThreadPool,
-    ThreadPool &downloadThreadPool, const std::string &syncPath,
-    const std::string &userEmail)
-    : m_dbManager(dbManager), m_apiClient(apiClient), m_reconcile(reconcile),
-      m_scanner(scanner), m_uploadThreadPool(uploadThreadPool),
+    SyncWorker &syncWorker, ActivityStore &activityStore,
+    ThreadPool &uploadThreadPool, ThreadPool &downloadThreadPool,
+    const std::string &syncPath, const std::string &userEmail, QObject *parent)
+    : m_dbManager(dbManager), m_activityStore(activityStore),
+      m_apiClient(apiClient), m_reconcile(reconcile), m_scanner(scanner),
+      m_uploadThreadPool(uploadThreadPool),
       m_downloadThreadPool(downloadThreadPool), m_syncWorker(syncWorker),
       m_syncPath(syncPath), m_userEmail(userEmail), m_stopThread(false) {}
 
 CloudSyncWorker::~CloudSyncWorker() { stop(); }
+
+void CloudSyncWorker::updateActivityMap(ReconciliationResult &reconciledItems) {
+
+  auto folderDeleteActivity =
+      Utility::convertToActivity<LocalFolderDeleteMetadata>(
+          reconciledItems.foldersToDeleteLocal, ActivityStatus::LOCAL_DELETE);
+
+  for (const auto &activity : folderDeleteActivity) {
+    addActivity(activity.id, activity);
+  }
+
+  auto folderMoveActivity = Utility::convertToActivity<DirectoryQueueEntry>(
+      reconciledItems.dirsToMove, ActivityStatus::LOCAL_MOVE);
+
+  for (const auto &activity : folderMoveActivity) {
+    addActivity(activity.id, activity);
+  }
+
+  auto fileDeleteActivity = Utility::convertToActivity<FileMetadata>(
+      reconciledItems.filesToDeleteLocal, ActivityStatus::LOCAL_DELETE);
+
+  for (const auto &activity : fileDeleteActivity) {
+    addActivity(activity.id, activity);
+  }
+
+  auto fileMoveActivity = Utility::convertToActivity<FileQueueEntry>(
+      reconciledItems.filesToMove, ActivityStatus::LOCAL_MOVE);
+
+  for (const auto &activity : fileMoveActivity) {
+    addActivity(activity.id, activity);
+  }
+
+  auto fileDownloadActivity = Utility::convertToActivity<CloudFileMetadata>(
+      reconciledItems.filesToDownload, ActivityStatus::DOWNLOAD);
+
+  for (const auto &activity : fileDownloadActivity) {
+    addActivity(activity.id, activity);
+  }
+
+  auto fileUpdateActivity = Utility::convertToActivity<CloudFileMetadata>(
+      reconciledItems.filesToUpdate, ActivityStatus::DOWNLOAD);
+
+  for (const auto &activity : fileUpdateActivity) {
+    addActivity(activity.id, activity);
+  }
+
+  auto folderCreateActivity =
+      Utility::convertToActivity<LocalFolderCreateMetadata>(
+          reconciledItems.foldersToCreateLocal,
+          ActivityStatus::LOCAL_FOLDER_CREATE);
+
+  for (const auto &activity : folderCreateActivity) {
+    addActivity(activity.id, activity);
+  }
+}
+
+void CloudSyncWorker::updateActivity(const std::string &key,
+                                     const SyncItem &item) {
+  m_activityStore.updateActivity(key, item);
+  emit activityUpdated(key, item);
+}
+
+void CloudSyncWorker::addActivity(const std::string &key,
+                                  const SyncItem &item) {
+  m_activityStore.addActivity(key, item);
+  emit activityAdded(key, item);
+}
+
+void CloudSyncWorker::removeActivity(const std::string &key) {
+  m_activityStore.removeActivity(key);
+  emit activityRemoved(key);
+}
 
 bool CloudSyncWorker::pollCloudToSyncToLocal() {
   std::optional<CloudMetadataResult> result;
@@ -46,6 +119,7 @@ bool CloudSyncWorker::pollCloudToSyncToLocal() {
     dbQFiles = m_dbManager.getAllQueueFiles();
     dbQDirs = m_dbManager.getAllQueueDirectories();
   }
+
   for (auto &dq : *dbQDirs) {
     if (dq.sync_status == syncStatusToString(SyncStatus::DELETE) ||
         dq.sync_status == syncStatusToString(SyncStatus::RENAME) ||
@@ -100,6 +174,8 @@ bool CloudSyncWorker::pollCloudToSyncToLocal() {
               << "\n";
     std::cout << "[cloudsyncworker] filesToUpdate: " << filesToUpdate.size()
               << "\n";
+
+    updateActivityMap(reconciledItems);
 
     processDirsToMove(dirsToMove);
 
@@ -276,7 +352,19 @@ void CloudSyncWorker::processFilesToDownload(
       }
 
       // 3. Download WITHOUT the database lock using CLONED client
-      bool downloadStatus = client->downloadFile(file, fileAbsPath);
+      //      bool downloadStatus = client->downloadFile(file, fileAbsPath);
+
+      bool downloadStatus = client->downloadFile(
+          file, fileAbsPath, [this](const std::string &key, double progress) {
+            auto it = m_activityStore.getActivity(key);
+            if (it.has_value()) {
+              it->progress = progress;
+              it->isActive = true;
+              it->inQueue = false;
+              it->isDone = progress >= 100.0;
+              updateActivity(key, it.value());
+            }
+          });
 
       // 4. Update Database WITH the lock
       pathParts fp = m_dbManager.getFolderDevice(fs::path(file.path));
@@ -339,6 +427,10 @@ void CloudSyncWorker::processFilesToDownload(
           return false;
         }
       } else {
+        auto syncItem = m_activityStore.getActivity(file.uuid);
+        syncItem->isActive = false;
+        syncItem->isError = true;
+        updateActivity(file.uuid, syncItem.value());
         std::cout << "[cloudsyncworker] download failed.. deleting.."
                   << fileAbsPath << std::endl;
         if (fs::exists(fileAbsPath)) {
@@ -373,16 +465,28 @@ void CloudSyncWorker::processFilesToDownload(
 void CloudSyncWorker::processFilesToDelete(
     const std::vector<FileMetadata> &filesToDeleteLocal) {
   for (auto &file : filesToDeleteLocal) {
+    auto syncItem = m_activityStore.getActivity(file.uuid);
+    syncItem->isActive = true;
+    updateActivity(file.uuid, syncItem.value());
+
     try {
       m_syncWorker.addIgnoreEvent(file.absPath, WatchEvent::Deleted);
       fs::remove(file.absPath);
       {
         std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
-        m_dbManager.deleteFileByPath(file.path, file.filename);
+        bool result = m_dbManager.deleteFileByPath(file.path, file.filename);
+        if (result) {
+          syncItem->isActive = false;
+          syncItem->isDone = true;
+          updateActivity(file.uuid, syncItem.value());
+        }
       }
     } catch (const std::exception &e) {
       std::cerr << "[cloudsyncworker] Exception:" << e.what()
                 << " in deleting file->" << file.absPath << "\n";
+      syncItem->isActive = false;
+      syncItem->isError = true;
+      updateActivity(file.uuid, syncItem.value());
     }
   }
 }
@@ -390,6 +494,10 @@ void CloudSyncWorker::processFilesToDelete(
 void CloudSyncWorker::processFoldersToCreate(
     const std::vector<LocalFolderCreateMetadata> &foldersToCreateLocal) {
   for (auto &folder : foldersToCreateLocal) {
+
+    auto syncItem = m_activityStore.getActivity(folder.uuid);
+    syncItem->isActive = true;
+    updateActivity(folder.uuid, syncItem.value());
 
     auto paths = getPathComponents(folder.path);
     try {
@@ -415,6 +523,9 @@ void CloudSyncWorker::processFoldersToCreate(
           m_syncWorker.removeIgnoreEvent(fp, WatchEvent::Added);
         }
       }
+      syncItem->isActive = false;
+      syncItem->isError = true;
+      updateActivity(folder.uuid, syncItem.value());
       continue;
     }
 
@@ -423,6 +534,7 @@ void CloudSyncWorker::processFoldersToCreate(
     std::vector<DirectoryMetadata> dirs;
     for (auto &path : folderPaths) {
       std::string uuid = "";
+
       if (folder.dirIDs && folder.dirIDs->count(path)) {
         uuid = folder.dirIDs->at(path);
       } else if (path == folder.path) {
@@ -434,12 +546,18 @@ void CloudSyncWorker::processFoldersToCreate(
         dirs.push_back(d);
       }
     }
+
     bool result = false;
+
     {
       std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
       result = m_dbManager.createDirectoryPaths(dirs);
     }
     if (!result) {
+      syncItem->isActive = false;
+      syncItem->isError = true;
+      updateActivity(folder.uuid, syncItem.value());
+
       try {
         std::cout << "[cloudsyncworker] dbcreation failed reverting... "
                   << "\n";
@@ -450,6 +568,10 @@ void CloudSyncWorker::processFoldersToCreate(
         m_syncWorker.removeIgnoreEvent(folder.absPath, WatchEvent::Deleted);
         std::cerr << "[cloudsyncworker] " << e.what() << "\n";
       }
+    } else {
+      syncItem->isActive = false;
+      syncItem->isDone = true;
+      updateActivity(folder.uuid, syncItem.value());
     }
   }
 }
@@ -457,6 +579,10 @@ void CloudSyncWorker::processFoldersToCreate(
 void CloudSyncWorker::processFoldersToDelete(
     const std::vector<LocalFolderDeleteMetadata> &foldersToDeleteLocal) {
   for (auto &folder : foldersToDeleteLocal) {
+    auto syncItem = m_activityStore.getActivity(folder.uuid);
+    syncItem->isActive = true;
+    updateActivity(folder.uuid, syncItem.value());
+
     // 1. Tell SyncWorker to ignore
     m_syncWorker.addIgnoreEvent(folder.absPath, WatchEvent::Deleted);
     try {
@@ -467,11 +593,23 @@ void CloudSyncWorker::processFoldersToDelete(
       std::cerr << "[cloudsyncworker] exception: " << e.what()
                 << " | unable to delete folder: " << folder.path << "\n";
       m_syncWorker.removeIgnoreEvent(folder.absPath, WatchEvent::Deleted);
+      syncItem->isActive = false;
+      syncItem->isError = true;
+      updateActivity(folder.uuid, syncItem.value());
       continue;
     }
     {
       std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
-      m_dbManager.deleteDirectory(folder.path);
+      bool result = m_dbManager.deleteDirectory(folder.path);
+      if (result) {
+        syncItem->isActive = false;
+        syncItem->isDone = true;
+        updateActivity(folder.uuid, syncItem.value());
+      } else {
+        syncItem->isActive = false;
+        syncItem->isError = true;
+        updateActivity(folder.uuid, syncItem.value());
+      }
     }
   }
 }
@@ -483,6 +621,10 @@ void CloudSyncWorker::processDirsToMove(
     std::string newAbsPath;
     oldAbsPath = *d.old_path == "/" ? m_syncPath : m_syncPath + *d.old_path;
     newAbsPath = d.path == "/" ? m_syncPath : m_syncPath + d.path;
+    auto syncItem = m_activityStore.getActivity(d.uuid);
+    syncItem->isActive = true;
+    syncItem->inQueue = false;
+    updateActivity(d.uuid, syncItem.value());
     try {
 
       if (fs::exists(oldAbsPath)) {
@@ -495,6 +637,10 @@ void CloudSyncWorker::processDirsToMove(
       std::cout << "[cloudsyncworker] move failed: " << e.what() << std::endl;
       std::cout << "[cloudsyncworker] newPath : " << d.path
                 << " |  oldPath : " << *d.old_path << std::endl;
+      syncItem->isActive = false;
+      syncItem->inQueue = false;
+      syncItem->isError = true;
+      updateActivity(d.uuid, syncItem.value());
       continue;
     }
     bool isMoved;
@@ -506,6 +652,10 @@ void CloudSyncWorker::processDirsToMove(
       std::cout << "[cloudsyncwoker] MOVE SUCCESSFULL :" << std::endl;
       std::cout << "[cloudsyncwoker] OLD: " << *d.old_path
                 << " | NEW: " << d.path << std::endl;
+      syncItem->isActive = false;
+      syncItem->isDone = true;
+      syncItem->inQueue = false;
+      updateActivity(d.uuid, syncItem.value());
     } else {
       std::cout << "[cloudsyncwoker] MOVE FAILED :" << std::endl;
       std::cout << "[cloudsyncwoker] OLD: " << *d.old_path
@@ -517,6 +667,11 @@ void CloudSyncWorker::processDirsToMove(
 void CloudSyncWorker::processFilesToMove(
     const std::vector<FileQueueEntry> &filesToMove) {
   for (auto &file : filesToMove) {
+    auto syncItem = m_activityStore.getActivity(file.uuid);
+    syncItem->isActive = true;
+    syncItem->inQueue = false;
+    syncItem->isError = false;
+    updateActivity(file.uuid, syncItem.value());
 
     std::string oldRelPath{*file.old_path};
     std::string newRelPath{file.path};
@@ -535,11 +690,17 @@ void CloudSyncWorker::processFilesToMove(
         m_syncWorker.addIgnoreEvent(newAbsPath, WatchEvent::Moved);
         fs::rename(oldAbsPath, newAbsPath);
       }
-    } catch (const std::exception &e) {
+      syncItem->isDone = true;
+      updateActivity(file.uuid, syncItem.value());
+
+    } catch (...) {
       std::cerr << "[cloudsyncworker] unable to rename from ->"
                 << *file.old_filename << " to->" << file.filename << "\n";
       m_syncWorker.removeIgnoreEvent(newAbsPath, WatchEvent::Moved);
       m_syncWorker.removeIgnoreEvent(newAbsPath, WatchEvent::Moved);
+      syncItem->isError = true;
+      syncItem->isActive = false;
+      updateActivity(file.uuid, syncItem.value());
       continue;
     }
     std::string path = *file.old_path;
@@ -566,6 +727,13 @@ void CloudSyncWorker::processFilesToMove(
         m_syncWorker.removeIgnoreEvent(oldAbsPath, WatchEvent::Moved);
         m_syncWorker.removeIgnoreEvent(oldAbsPath, WatchEvent::Moved);
       }
+      syncItem->isError = true;
+      syncItem->isActive = false;
+      updateActivity(file.uuid, syncItem.value());
+    } else {
+      syncItem->isDone = true;
+      syncItem->isActive = false;
+      updateActivity(file.uuid, syncItem.value());
     }
   }
 }
@@ -598,7 +766,7 @@ void CloudSyncWorker::processFilesInConflict(
         m_syncWorker.addIgnoreEvent(newAbsPath, WatchEvent::Moved);
         fs::rename(absPath, newAbsPath);
 
-      } catch (const std::exception &e) {
+      } catch (...) {
         std::cerr << "[cloudsyncworker] unable to rename from " << absPath
                   << "-> to ->" << newAbsPath << std::endl;
         m_syncWorker.removeIgnoreEvent(newAbsPath, WatchEvent::Moved);
@@ -618,7 +786,7 @@ void CloudSyncWorker::processFilesInConflict(
         }
         fs::create_directories(dirPath);
 
-      } catch (const std::exception &e) {
+      } catch (...) {
         std::cout << "[cloudsyncworker] unable to create directory " << dirPath
                   << std::endl;
         for (auto &p : paths) {
@@ -634,7 +802,17 @@ void CloudSyncWorker::processFilesInConflict(
     }
     // 5. add an event to ignore the file that is being downloaded
     m_syncWorker.addIgnoreEvent(absPath, WatchEvent::Added);
-    auto result = m_apiClient.downloadFile(file, absPath);
+    auto result = m_apiClient.downloadFile(
+        file, absPath, [this](const std::string &key, double progress) {
+          auto it = m_activityStore.getActivity(key);
+          if (it.has_value()) {
+            it->progress = progress;
+            it->isActive = true;
+            it->inQueue = false;
+            it->isDone = progress >= 100.0;
+            updateActivity(key, it.value());
+          }
+        });
     if (!result) {
       if (fs::exists(absPath)) {
         try {
@@ -643,7 +821,7 @@ void CloudSyncWorker::processFilesInConflict(
           m_syncWorker.addIgnoreEvent(absPath, WatchEvent::Deleted);
           fs::remove(absPath);
 
-        } catch (const std::exception &e) {
+        } catch (...) {
           std::cerr << "[cloudsyncworker] unable to delete the file that "
                        "failed to download->"
                     << absPath << std::endl;
@@ -713,7 +891,7 @@ void CloudSyncWorker::processFilesInConflict(
         if (fs::exists(newAbsPath)) {
           fs::remove(newAbsPath);
         }
-      } catch (const std::exception &e) {
+      } catch (...) {
         m_syncWorker.removeIgnoreEvent(absPath, WatchEvent::Deleted);
         m_syncWorker.removeIgnoreEvent(newAbsPath, WatchEvent::Deleted);
       }
@@ -725,17 +903,30 @@ void CloudSyncWorker::processFilesInConflict(
 void CloudSyncWorker::processFilesToUpdate(
     const std::vector<CloudFileMetadata> &filesToUpdate) {
   for (auto &file : filesToUpdate) {
+    auto syncItem = m_activityStore.getActivity(file.uuid);
+    syncItem->isActive = true;
+    updateActivity(file.uuid, syncItem.value());
+
     std::string absPath = file.path == "/"
                               ? m_syncPath + file.filename
                               : m_syncPath + file.path + "/" + file.filename;
     m_syncWorker.addIgnoreEvent(absPath, WatchEvent::Modified);
-    bool result = m_apiClient.downloadFile(file, absPath);
+    bool result = m_apiClient.downloadFile(
+        file, absPath, [this](const std::string &key, double progress) {
+          auto it = m_activityStore.getActivity(key);
+          if (it.has_value()) {
+            it->progress = progress;
+            it->isActive = true;
+            it->inQueue = false;
+            it->isDone = progress >= 100.0;
+            updateActivity(key, it.value());
+          }
+        });
     if (result) {
-      if (!result) {
-        // we need a way to revert the file to its previous state
-        // or retry downloading the file again.
-        continue;
-      }
+      syncItem->isActive = false;
+      syncItem->isDone = true;
+      updateActivity(file.uuid, syncItem.value());
+
       FileMetadata f(getFileMetadata(file, absPath));
       std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
       bool isUpdated =
@@ -745,6 +936,10 @@ void CloudSyncWorker::processFilesToUpdate(
         // the db update failed retry updating the DB again
         continue;
       }
+    } else {
+      syncItem->isActive = false;
+      syncItem->isError = true;
+      updateActivity(file.uuid, syncItem.value());
     }
   }
 }
@@ -752,8 +947,10 @@ void CloudSyncWorker::processFilesToUpdate(
 std::optional<bool>
 CloudSyncWorker::deleteFolderInCloud(DirectoryQueueEntry &dq) {
   // delete folder
-  std::cout << "[cloudsyncworker] device: " << dq.device
-            << " folder: " << dq.folder << " path: " << dq.path << std::endl;
+  auto syncItem = m_activityStore.getActivity(dq.uuid);
+  syncItem->isActive = true;
+  syncItem->inQueue = false;
+  updateActivity(dq.uuid, syncItem.value());
   {
     std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
     auto d = m_dbManager.getDirectoryByPath(dq.device, dq.folder, dq.path);
@@ -764,6 +961,26 @@ CloudSyncWorker::deleteFolderInCloud(DirectoryQueueEntry &dq) {
     }
   }
   bool isCreated = m_apiClient.deleteFolder(dq);
+
+  --m_upSyncTasks;
+  if (m_upSyncTasks == 0) {
+    m_upSyncTasksCV.notify_all();
+  }
+
+  if (!isCreated) {
+    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+    m_syncWorker.pushDirEntry(dq);
+    std::cout << "[cloudsyncworker] Error deleting folder -> " << dq.path
+              << " in cloud" << "\n";
+    syncItem->isActive = false;
+    syncItem->isDone = false;
+    syncItem->isError = true;
+    syncItem->inQueue = false;
+    updateActivity(dq.uuid, syncItem.value());
+
+    return false;
+  }
+
   {
     std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
     auto isQRemoved =
@@ -775,12 +992,12 @@ CloudSyncWorker::deleteFolderInCloud(DirectoryQueueEntry &dq) {
       return std::nullopt;
     }
   }
-  if (!isCreated) {
-    m_syncWorker.pushDirEntry(dq);
-    std::cout << "[cloudsyncworker] Error deleting folder -> " << dq.path
-              << " in cloud" << "\n";
-    return false;
-  }
+
+  syncItem->isActive = false;
+  syncItem->isDone = true;
+  syncItem->isError = false;
+  syncItem->inQueue = false;
+  updateActivity(dq.uuid, syncItem.value());
 
   std::cout << "[cloudsyncworker] folder -> " << dq.path << " deleted in cloud"
             << "\n";
@@ -789,13 +1006,33 @@ CloudSyncWorker::deleteFolderInCloud(DirectoryQueueEntry &dq) {
 
 std::optional<bool> CloudSyncWorker::moveFolderInCloud(DirectoryQueueEntry &dq,
                                                        bool isRename) {
+  auto syncItem = m_activityStore.getActivity(dq.uuid);
+  syncItem->isActive = true;
+  syncItem->inQueue = false;
+  updateActivity(dq.uuid, syncItem.value());
+
   bool isRenamed = m_apiClient.moveFolder(dq, isRename);
+
+  --m_upSyncTasks;
+  if (m_upSyncTasks == 0) {
+    m_upSyncTasksCV.notify_all();
+  }
+
   if (!isRenamed) {
     std::cout << "[cloudsyncworker] Error renaming -> " << *dq.old_path
               << " => " << dq.path << " in cloud" << "\n";
+    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
     m_syncWorker.pushDirEntry(dq);
+
+    syncItem->isActive = false;
+    syncItem->isDone = false;
+    syncItem->isError = true;
+    syncItem->inQueue = false;
+    updateActivity(dq.uuid, syncItem.value());
+
     return false;
   }
+
   {
     std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
     auto isQRemoved =
@@ -806,6 +1043,12 @@ std::optional<bool> CloudSyncWorker::moveFolderInCloud(DirectoryQueueEntry &dq,
       return std::nullopt;
     }
   }
+
+  syncItem->isActive = false;
+  syncItem->isDone = true;
+  syncItem->isError = false;
+  syncItem->inQueue = false;
+  updateActivity(dq.uuid, syncItem.value());
   std::cout << "[cloudsyncworker] folder =>" << *dq.old_path
             << " renamed in cloud to =>" << dq.path << "\n";
   return true;
@@ -813,6 +1056,10 @@ std::optional<bool> CloudSyncWorker::moveFolderInCloud(DirectoryQueueEntry &dq,
 
 std::optional<bool>
 CloudSyncWorker::createFolderInCloud(DirectoryQueueEntry &dq) {
+  auto syncItem = m_activityStore.getActivity(dq.uuid);
+  syncItem->isActive = true;
+  syncItem->inQueue = false;
+  updateActivity(dq.uuid, syncItem.value());
   // create folder
   {
     std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
@@ -825,10 +1072,22 @@ CloudSyncWorker::createFolderInCloud(DirectoryQueueEntry &dq) {
   }
 
   bool isCreated = m_apiClient.createFolder(dq);
+
+  --m_upSyncTasks;
+  if (m_upSyncTasks == 0) {
+    m_upSyncTasksCV.notify_all();
+  }
+
   if (!isCreated) {
     std::cout << "[cloudsyncworker] Error creating folder -> " << dq.path
               << " in cloud" << "\n";
+    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
     m_syncWorker.pushDirEntry(dq);
+    syncItem->isActive = false;
+    syncItem->isDone = false;
+    syncItem->isError = true;
+    syncItem->inQueue = false;
+    updateActivity(dq.uuid, syncItem.value());
     return false;
   }
 
@@ -842,6 +1101,11 @@ CloudSyncWorker::createFolderInCloud(DirectoryQueueEntry &dq) {
     }
   }
 
+  syncItem->isActive = false;
+  syncItem->isDone = true;
+  syncItem->inQueue = false;
+  updateActivity(dq.uuid, syncItem.value());
+
   std::cout << "[cloudsyncworker] folder -> " << dq.path
             << " created in cloud \n";
   return true;
@@ -853,128 +1117,43 @@ std::optional<bool> CloudSyncWorker::uploadFile(ApiClient &client,
   std::vector<DirectoryMetadata> dirTree;
   std::vector<std::string> pathComponents = getPathComponents(fq.path);
 
+  std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
   for (auto &path : pathComponents) {
     pathParts p = m_dbManager.getFolderDevice(fs::path(path));
     std::optional<DirectoryMetadata> dir{std::nullopt};
-    {
-      std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
-      dir = m_dbManager.getDirectoryByPath(p.device, p.folder, path);
-    }
+    dir = m_dbManager.getDirectoryByPath(p.device, p.folder, path);
     if (dir.has_value()) {
-      dirTree.push_back(*dir);
+      dirTree.push_back(dir.value());
     } else {
       return false;
     }
   }
 
   FileMetadata f = constructFileMetadata(fq);
-  bool isUploaded = client.uploadFile(fq, dirTree);
+  //  bool isUploaded = client.uploadFile(fq, dirTree);
+  bool isUploaded = client.uploadFile(
+      fq, dirTree, false, [this](const std::string &key, double progress) {
+        auto it = m_activityStore.getActivity(key);
+        if (it.has_value()) {
+          it->progress = progress;
+          it->isActive = true;
+          it->inQueue = false;
+          it->isDone = progress >= 100.0;
+          updateActivity(key, it.value());
+        }
+      });
+
   bool isFileUpdated = false;
+
+  --m_upSyncTasks;
+  if (m_upSyncTasks == 0) {
+    m_upSyncTasksCV.notify_all();
+  }
 
   if (!isUploaded) {
     std::cout << "[cloudsyncworker] file upload failed: " << fq.filename
               << "\n";
-    m_syncWorker.pushFileEntry(fq);
-    return false;
-  }
-
-  {
     std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
-    isFileUpdated = m_dbManager.deleteFileQueue(fq.path, fq.filename);
-  }
-
-  if (isFileUpdated) {
-    std::cout << "[cloudsyncworker] fileQueue delete failed" << fq.filename
-              << "\n";
-    return std::nullopt;
-  }
-
-  std::cout << "[cloudsyncworker] file->" << fq.filename << " uploaded to cloud"
-            << "\n";
-  --m_upSyncTasks;
-  if (m_upSyncTasks == 0) {
-    m_upSyncTasksCV.notify_all();
-  }
-  return true;
-}
-
-std::optional<bool>
-CloudSyncWorker::uploadModifiedFile(ApiClient &client,
-                                    const FileQueueEntry &fq) {
-  // update file
-  bool isUploaded = client.uploadFile(fq, {}, true);
-  FileMetadata f = constructFileMetadata(fq);
-  bool isFileUpdated = false;
-
-  if (!isUploaded) {
-    std::cout << "[cloudsyncworker] unable to update the file: " << fq.absPath
-              << "\n";
-    m_syncWorker.pushFileEntry(fq);
-    return false;
-  }
-
-  {
-    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
-    isFileUpdated = m_dbManager.deleteFileQueue(fq.path, fq.filename);
-  }
-
-  if (isFileUpdated) {
-    std::cout << "[cloudsyncworker] fileQueue delete failed" << fq.filename
-              << "\n";
-    return std::nullopt;
-  }
-
-  std::cout << "[cloudsyncworker] file->" << fq.filename << " uploaded to cloud"
-            << "\n";
-  --m_upSyncTasks;
-  if (m_upSyncTasks == 0) {
-    m_upSyncTasksCV.notify_all();
-  }
-  return true;
-}
-
-std::optional<bool> CloudSyncWorker::deleteFile(ApiClient &client,
-                                                const FileQueueEntry &fq) {
-  // delete file
-  bool isUploaded = client.deleteFile(fq);
-  bool isFileUpdated = false;
-
-  if (!isUploaded) {
-    std::cout << "[cloudsyncworker] unable to delete file in cloud: "
-              << fq.absPath << "\n";
-    m_syncWorker.pushFileEntry(fq);
-    return false;
-  }
-
-  {
-    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
-    isFileUpdated = m_dbManager.deleteFileQueue(fq.path, fq.filename);
-  }
-
-  if (isFileUpdated) {
-    std::cout << "[cloudsyncworker] fileQueue delete failed" << fq.absPath
-              << "\n";
-    return std::nullopt;
-  }
-
-  std::cout << "[cloudsyncworker] file->" << fq.absPath
-            << " deleted from  cloud" << "\n";
-  --m_upSyncTasks;
-  if (m_upSyncTasks == 0) {
-    m_upSyncTasksCV.notify_all();
-  }
-  return true;
-}
-
-std::optional<bool> CloudSyncWorker::renameFile(ApiClient &client,
-                                                const FileQueueEntry &fq) {
-  bool isUploaded = client.renameFile(fq);
-  FileMetadata f = constructFileMetadata(fq);
-  bool isFileUpdated = false;
-
-  if (!isUploaded) {
-    std::cout << "[cloudsyncworker] unable to rename file->" << *fq.old_filename
-              << " to ->" << fq.filename << "\n";
     m_syncWorker.pushFileEntry(fq);
     return false;
   }
@@ -985,80 +1164,243 @@ std::optional<bool> CloudSyncWorker::renameFile(ApiClient &client,
   }
 
   if (!isFileUpdated) {
-    std::cout << "[cloudsyncworker] unable to delete fileQueue"
-              << *fq.old_filename << " to ->" << fq.filename << "\n";
+    std::cout << "[cloudsyncworker] fileQueue delete failed : " << fq.filename
+              << "\n";
     return std::nullopt;
   }
 
-  std::cout << "[cloudsyncworker] file->" << *fq.old_filename << " renamed to->"
-            << fq.filename << " in cloud "
+  std::cout << "[cloudsyncworker] file->" << fq.filename << " uploaded to cloud"
             << "\n";
+
+  return true;
+}
+
+std::optional<bool>
+CloudSyncWorker::uploadModifiedFile(ApiClient &client,
+                                    const FileQueueEntry &fq) {
+  // update file
+  //  bool isUploaded = client.uploadFile(fq, {}, true);
+  bool isUploaded = client.uploadFile(
+      fq, {}, true, [this](const std::string &key, double progress) {
+        auto it = m_activityStore.getActivity(key);
+        if (it.has_value()) {
+          it->progress = progress;
+          it->isActive = true;
+          it->inQueue = false;
+          it->isDone = progress >= 100.0;
+          updateActivity(key, it.value());
+        }
+      });
+
+  FileMetadata f = constructFileMetadata(fq);
+  bool isFileUpdated = false;
+
   --m_upSyncTasks;
   if (m_upSyncTasks == 0) {
     m_upSyncTasksCV.notify_all();
   }
+
+  if (!isUploaded) {
+    std::cout << "[cloudsyncworker] unable to update the file: " << fq.absPath
+              << "\n";
+    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+    m_syncWorker.pushFileEntry(fq);
+    return false;
+  }
+
+  {
+    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+    isFileUpdated = m_dbManager.deleteFileQueue(fq.path, fq.filename);
+  }
+
+  if (!isFileUpdated) {
+    std::cout << "[cloudsyncworker] fileQueue delete failed : " << fq.filename
+              << "\n";
+    return std::nullopt;
+  }
+
+  std::cout << "[cloudsyncworker] file->" << fq.filename << " uploaded to cloud"
+            << "\n";
+  return true;
+}
+
+std::optional<bool> CloudSyncWorker::deleteFile(ApiClient &client,
+                                                const FileQueueEntry &fq) {
+  auto syncItem = m_activityStore.getActivity(fq.uuid);
+  syncItem->isActive = true;
+  syncItem->inQueue = false;
+  updateActivity(fq.uuid, syncItem.value());
+  // delete file
+  bool isUploaded = client.deleteFile(fq);
+  bool isFileUpdated = false;
+
+  --m_upSyncTasks;
+  if (m_upSyncTasks == 0) {
+    m_upSyncTasksCV.notify_all();
+  }
+  if (!isUploaded) {
+    std::cout << "[cloudsyncworker] unable to delete file in cloud: "
+              << fq.absPath << "\n";
+    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+    m_syncWorker.pushFileEntry(fq);
+    syncItem->isActive = false;
+    syncItem->inQueue = false;
+    syncItem->isDone = false;
+    syncItem->isError = true;
+    updateActivity(fq.uuid, syncItem.value());
+    return false;
+  }
+
+  {
+    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+    isFileUpdated = m_dbManager.deleteFileQueue(fq.path, fq.filename);
+  }
+
+  if (!isFileUpdated) {
+    std::cout << "[cloudsyncworker] fileQueue delete failed : " << fq.absPath
+              << "\n";
+    return std::nullopt;
+  }
+  syncItem->isActive = false;
+  syncItem->isDone = true;
+  syncItem->inQueue = false;
+  updateActivity(fq.uuid, syncItem.value());
+
+  std::cout << "[cloudsyncworker] file->" << fq.absPath
+            << " deleted from  cloud" << "\n";
+
+  return true;
+}
+
+std::optional<std::vector<DirectoryMetadata>>
+
+CloudSyncWorker::getFileDirTree(const FileQueueEntry &fq) {
+  std::vector<DirectoryMetadata> dirTree;
+  std::vector<std::string> pathComponents = getPathComponents(fq.path);
+
+  std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+  for (auto &path : pathComponents) {
+    pathParts p = m_dbManager.getFolderDevice(fs::path(path));
+    std::optional<DirectoryMetadata> dir{std::nullopt};
+    dir = m_dbManager.getDirectoryByPath(p.device, p.folder, path);
+    if (dir.has_value()) {
+      dirTree.push_back(*dir);
+    } else {
+      return std::nullopt;
+    }
+  }
+  return dirTree;
+}
+
+std::optional<bool> CloudSyncWorker::renameFile(ApiClient &client,
+                                                const FileQueueEntry &fq) {
+  auto syncItem = m_activityStore.getActivity(fq.uuid);
+  syncItem->isActive = true;
+  syncItem->inQueue = false;
+  updateActivity(fq.uuid, syncItem.value());
+
+  auto dirTree = getFileDirTree(fq);
+
+  bool isUploaded = client.renameFile(fq, dirTree.value());
+  FileMetadata f = constructFileMetadata(fq);
+  bool isFileUpdated = false;
+
+  --m_upSyncTasks;
+  if (m_upSyncTasks == 0) {
+    m_upSyncTasksCV.notify_all();
+  }
+
+  if (!isUploaded) {
+    std::cout << "[cloudsyncworker] unable to rename file->" << *fq.old_filename
+              << " to ->" << fq.filename << "\n";
+    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+    m_syncWorker.pushFileEntry(fq);
+    syncItem->isActive = false;
+    syncItem->isError = true;
+    syncItem->isDone = false;
+    syncItem->inQueue = false;
+    updateActivity(fq.uuid, syncItem.value());
+    return false;
+  }
+
+  {
+    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+    isFileUpdated = m_dbManager.deleteFileQueue(fq.path, fq.filename);
+  }
+
+  if (!isFileUpdated) {
+    std::cout << "[cloudsyncworker] fileQueue delete failed : "
+              << *fq.old_filename << " to ->" << fq.filename << "\n";
+    return std::nullopt;
+  }
+  syncItem->isActive = false;
+  syncItem->isError = false;
+  syncItem->isDone = true;
+  syncItem->inQueue = false;
+  updateActivity(fq.uuid, syncItem.value());
+
+  std::cout << "[cloudsyncworker] file->" << *fq.old_filename << " renamed to->"
+            << fq.filename << " in cloud "
+            << "\n";
   return true;
 }
 
 void CloudSyncWorker::processQueueToSyncUp() {
-  std::vector<std::future<bool>> syncUpTasks;
 
   while (!m_syncWorker.dirIsEmpty() || !m_syncWorker.fileIsEmpty()) {
-    DirectoryQueueEntry dq;
-    FileQueueEntry fq;
-    if (!m_syncWorker.dirIsEmpty()) {
-      dq = m_syncWorker.topDirEntry();
-      m_syncWorker.popDirEntry();
+    std::optional<DirectoryQueueEntry> dq = m_syncWorker.popNextDirEntry();
 
-      if (dq.sync_status == syncStatusToString(SyncStatus::DELETE)) {
-        deleteFolderInCloud(dq);
+    if (dq.has_value()) {
+      if (dq->sync_status == syncStatusToString(SyncStatus::DELETE)) {
+        ++m_upSyncTasks;
+        deleteFolderInCloud(*dq);
       }
-      if (dq.sync_status == syncStatusToString(SyncStatus::RENAME)) {
-        moveFolderInCloud(dq, true);
+      if (dq->sync_status == syncStatusToString(SyncStatus::RENAME)) {
+        ++m_upSyncTasks;
+        moveFolderInCloud(*dq, true);
       }
-      if (dq.sync_status == syncStatusToString(SyncStatus::MOVED)) {
-        moveFolderInCloud(dq, false);
+      if (dq->sync_status == syncStatusToString(SyncStatus::MOVED)) {
+        ++m_upSyncTasks;
+        moveFolderInCloud(*dq, false);
       }
-      if (dq.sync_status == syncStatusToString(SyncStatus::NEW)) {
-        createFolderInCloud(dq);
+      if (dq->sync_status == syncStatusToString(SyncStatus::NEW)) {
+        ++m_upSyncTasks;
+        createFolderInCloud(*dq);
       }
     }
-    if (!m_syncWorker.fileIsEmpty()) {
-      fq = m_syncWorker.topFileEntry();
-      m_syncWorker.popFileEntry();
-      auto clientPtr = m_apiClient.clone();
 
+    std::optional<FileQueueEntry> fq = m_syncWorker.popNextFileEntry();
+
+    if (fq.has_value()) {
+      auto clientPtr = m_apiClient.clone();
       auto uploadFunc = [this, fq, client = std::move(clientPtr)]() mutable {
-        if (fq.sync_status == syncStatusToString(SyncStatus::DELETE)) {
+        if (fq->sync_status == syncStatusToString(SyncStatus::DELETE)) {
           ++m_upSyncTasks;
-          deleteFile(*client, fq);
+          deleteFile(*client, *fq);
         }
-        if (fq.sync_status == syncStatusToString(SyncStatus::MOVED)) {
+        if (fq->sync_status == syncStatusToString(SyncStatus::MOVED)) {
           ++m_upSyncTasks;
-          renameFile(*client, fq);
+          renameFile(*client, *fq);
         }
-        if (fq.sync_status == syncStatusToString(SyncStatus::RENAME)) {
+        if (fq->sync_status == syncStatusToString(SyncStatus::RENAME)) {
           ++m_upSyncTasks;
-          renameFile(*client, fq);
+          renameFile(*client, *fq);
         }
-        if (fq.sync_status == syncStatusToString(SyncStatus::NEW)) {
+        if (fq->sync_status == syncStatusToString(SyncStatus::NEW)) {
           ++m_upSyncTasks;
-          uploadFile(*client, fq);
+          uploadFile(*client, *fq);
         }
-        if (fq.sync_status == syncStatusToString(SyncStatus::MODIFIED)) {
+        if (fq->sync_status == syncStatusToString(SyncStatus::MODIFIED)) {
           ++m_upSyncTasks;
-          uploadModifiedFile(*client, fq);
+          uploadModifiedFile(*client, *fq);
         }
       };
-      //    auto future = m_uploadThreadPool.enqueue(std::move(uploadFunc));
       m_uploadThreadPool.enqueue(std::move(uploadFunc));
-      //  syncUpTasks.emplace_back(std::move(future));
     }
   }
-
+  /*
   std::optional<std::vector<FileQueueEntry>> queueFiles{std::nullopt};
   std::optional<std::vector<DirectoryQueueEntry>> queueDirs{std::nullopt};
-
   {
     std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
     queueFiles = m_dbManager.getAllQueueFiles();
@@ -1078,10 +1420,45 @@ void CloudSyncWorker::processQueueToSyncUp() {
       }
     }
   }
+  */
 };
+
+void CloudSyncWorker::initActivityAndPriorityQ() {
+
+  std::optional<std::vector<FileQueueEntry>> qFiles;
+
+  std::optional<std::vector<DirectoryQueueEntry>> qDirs;
+
+  {
+    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+    qFiles = m_dbManager.getAllQueueFiles();
+    qDirs = m_dbManager.getAllQueueDirectories();
+  }
+
+  for (auto &fq : qFiles.value()) {
+    auto activity = Utility::resolveActivityStatus<FileQueueEntry>(fq);
+    if (activity.has_value()) {
+      auto syncItem =
+          Utility::convertToActivity<FileQueueEntry>(fq, activity.value());
+      addActivity(syncItem.id, syncItem);
+    }
+    m_syncWorker.pushFileEntry(fq);
+  }
+
+  for (auto &dq : qDirs.value()) {
+    auto activity = Utility::resolveActivityStatus<DirectoryQueueEntry>(dq);
+    if (activity.has_value()) {
+      auto syncItem =
+          Utility::convertToActivity<DirectoryQueueEntry>(dq, activity.value());
+      addActivity(syncItem.id, syncItem);
+    }
+    m_syncWorker.pushDirEntry(dq);
+  }
+}
 
 void CloudSyncWorker::start() {
   m_stopThread = false;
+  initActivityAndPriorityQ();
   m_uploadThread = std::thread(&CloudSyncWorker::runSyncDown, this);
   m_downloadThread = std::thread(&CloudSyncWorker::runSyncUp, this);
 }

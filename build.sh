@@ -14,7 +14,14 @@ if [[ "$OSTYPE" == "darwin"* ]] || [[ "$OSTYPE" == "linux-gnu"* ]]; then
 
     if [ -n "$VCPKG_ROOT" ] && [ -f "$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" ]; then
         VCPKG_TOOLCHAIN="-DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-        echo "Using vcpkg toolchain from $VCPKG_ROOT"
+        # Detect architecture for macOS triplet
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            ARCH=$(uname -m)
+            VCPKG_TRIPLET="-DVCPKG_TARGET_TRIPLET=$ARCH-osx"
+            echo "Using vcpkg toolchain from $VCPKG_ROOT ($ARCH-osx)"
+        else
+            echo "Using vcpkg toolchain from $VCPKG_ROOT"
+        fi
     else
         echo "Warning: VCPKG_ROOT not found or vcpkg.cmake missing. Build might fail."
     fi
@@ -23,7 +30,7 @@ fi
 # Configure the project only if CMakeCache.txt doesn't exist or CMakeLists.txt is newer
 if [ ! -f build/CMakeCache.txt ] || [ CMakeLists.txt -nt build/CMakeCache.txt ]; then
     echo "Configuring project..."
-    cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON $VCPKG_TOOLCHAIN
+    cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON $VCPKG_TOOLCHAIN $VCPKG_TRIPLET
     
     # Check if configuration was successful
     if [ $? -ne 0 ]; then

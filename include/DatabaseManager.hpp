@@ -48,6 +48,8 @@ public:
 
   bool insertFile(const FileMetadata &file, const FileQueueEntry &fileQueue);
 
+  bool renameFile(const FileMetadata &file, const FileQueueEntry &fileQueue);
+
   bool updateFile(const FileMetadata &file);
 
   bool deleteFile(const std::string &path, const std::string &filename,
@@ -61,6 +63,7 @@ public:
 
   bool updateFileWithTransaction(const FileMetadata &f, const std::string &path,
                                  const std::string &filename);
+
   // Directory operations
   std::optional<std::vector<DirectoryMetadata>> getAllDirectories();
 
@@ -146,6 +149,9 @@ public:
 
   std::optional<std::vector<DirectoryMetadata>>
   getAllDirsInPath(const std::string &path);
+
+  std::optional<std::vector<FileQueueEntry>>
+  getFilesInDirQ(const std::string &path);
 
   std::vector<FileMetadata> getFilesInDirectory(const std::string &path);
   bool reconcileLocalState(const std::vector<FileMetadata> &filesToAdd,

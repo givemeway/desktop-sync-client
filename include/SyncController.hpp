@@ -1,41 +1,64 @@
 #ifndef SYNCCONTROLLER_HPP
 #define SYNCCONTROLLER_HPP
 
+#include "ActivityModel.hpp"
+#include "types.hpp"
 #include <QObject>
 #include <QString>
 #include <QVariantList>
-#include "CloudSyncWorker.hpp"
 
 namespace sync_app {
 
+class CloudSyncWorker;
+class SyncWorker;
+
 class SyncController : public QObject {
-    Q_OBJECT
-    Q_PROPERTY(QString status READ status NOTIFY statusChanged)
-    Q_PROPERTY(double progress READ progress NOTIFY progressChanged)
-    Q_PROPERTY(QVariantList recentActivity READ recentActivity NOTIFY activityChanged)
+  Q_OBJECT
+  Q_PROPERTY(ActivityModel *activityModel READ activityModel CONSTANT)
+  Q_PROPERTY(bool isSyncing READ isSyncing NOTIFY isSyncingChanged)
+  Q_PROPERTY(QString storageUsed READ storageUsed NOTIFY storageUsedChanged)
 
 public:
-    explicit SyncController(CloudSyncWorker& engine, QObject *parent = nullptr);
+  static void initialize(CloudSyncWorker *worker, SyncWorker *syncWorker) {
+    if (!m_instance) {
+      m_instance = new SyncController(worker, syncWorker);
+    }
+  }
+  static SyncController *instance() { return m_instance; }
+  SyncController(const SyncController &) = delete;
+  SyncController &operator=(const SyncController &) = delete;
 
-    QString status() const;
-    double progress() const;
-    QVariantList recentActivity() const;
+  // --- getters
+  ActivityModel *activityModel() { return m_activityModel; }
+  bool isSyncing() const { return m_isSyncing; }
+  QString storageUsed() const { return m_storageUsed; }
+
+  // QML callable actions
+  Q_INVOKABLE void startSync();
+  Q_INVOKABLE void pauseSync();
+  Q_INVOKABLE void uploadFile(const QString &path);
+  Q_INVOKABLE void deleteFile(const QString &path);
 
 signals:
-    void statusChanged();
-    void progressChanged();
-    void activityChanged();
+  void isSyncingChanged();
+  void storageUsedChanged();
+  void showError(const QString &message);
 
-public slots:
-    void refresh();
-    void startSync();
-    void stopSync();
+private slots:
+  void onSyncStarted();
+  void onSyncFinished();
+  void onErrorOccurred(const QString &message);
 
 private:
-    CloudSyncWorker& m_engine;
-    QString m_status;
-    double m_progress;
-    QVariantList m_activity;
+  explicit SyncController(CloudSyncWorker *syncEngine, SyncWorker *syncWorker,
+                          QObject *parent = nullptr);
+  static SyncController *m_instance;
+  CloudSyncWorker *m_cloudSyncWorker = nullptr;
+  SyncWorker *m_syncWorker = nullptr;
+  ActivityModel *m_activityModel = nullptr;
+
+  bool m_isSyncing = false;
+  QString m_storageUsed = "0 MB";
 };
 
 } // namespace sync_app

@@ -5,14 +5,15 @@
   "description": "Cross-platform desktop sync client",
   "dependencies": [
     "libmagic",
-    "opencv4",
     "sqlite3",
     "sqlite-orm",
     "efsw",
     "nlohmann-json",
     "picosha2",
-    "qtbase",
-    "qtdeclarative",
-    "qtquickcontrols2"
-  ]
+    "curl",
+    "stb",
+    "openssl"
+  ],
+  "builtin-baseline": "8eed1d644672846105716dc1c21926b20d928584"
 }
+ 
