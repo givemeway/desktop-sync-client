@@ -261,10 +261,11 @@ ReconciliationResult ReconciliationService::reconcile(
           status == syncStatusToString(SyncStatus::NEW)) {
         continue; // Skip if local work pending
       }
-    } else {
-      if (itDirQ != localDirQByUuid.end())
-        continue;
     }
+    if (itLQ == localQueueByOrigin.end() && itDirQ != localDirQByUuid.end() &&
+        itDirQ->second.sync_status !=
+            syncStatusToString(SyncStatus::FILE_LINKED))
+      continue;
     std::string key = getUniqueKey(dbFile.path, dbFile.filename);
     if (cloudPathMap.find(key) == cloudPathMap.end())
       result.filesToDeleteLocal.push_back(dbFile);
@@ -386,7 +387,7 @@ std::optional<FileQueueEntry> ReconciliationService::localInQueueByAnyPath(
   return std::nullopt;
 }
 
-void ReconciliationService::reconcileLocalState(
+bool ReconciliationService::reconcileLocalState(
     const std::vector<ScannedFile> &scannedFiles,
     const std::vector<ScannedDirectory> &scannedDirs) {
   std::cout << "[Reconcile] Reconciling local filesystem with database..."
@@ -459,8 +460,9 @@ void ReconciliationService::reconcileLocalState(
     if (itPath == scanDirsMap.end()) {
       std::cout << "[Reconcile] Offline DIR DELETE detected: " << path
                 << std::endl;
-      DirectoryQueueEntry q{Utility::constructDirectoryQueueEntry(dbDir)};
-      q.sync_status = syncStatusToString(SyncStatus::DELETE);
+      auto old_path = dbDir.path;
+      DirectoryQueueEntry q{Utility::constructDirectoryQueueEntry(
+          dbDir, SyncStatus::DELETE, std::move(old_path))};
       dirsToDelete.push_back(q);
     }
   }
@@ -535,7 +537,11 @@ void ReconciliationService::reconcileLocalState(
     if (itPath == scanFilesMap.end()) {
       std::cout << "[Reconcile] Offline DELETE detected: " << key << std::endl;
       FileQueueEntry fq;
-      fq = Utility::constructFileQueueEntry(dbFile, SyncStatus::DELETE);
+      auto old_path = dbFile.path;
+      auto old_filename = dbFile.filename;
+      fq = Utility::constructFileQueueEntry(dbFile, SyncStatus::DELETE,
+                                            std::move(old_path),
+                                            std::move(old_filename));
       filesToDelete.push_back(fq);
     }
   }
@@ -546,6 +552,18 @@ void ReconciliationService::reconcileLocalState(
 
   OfflineReconResult updated = Utility::detectRenames<OfflineReconResult>(
       filesToAdd, filesToDelete, dirsToAdd, dirsToDelete, m_syncPath);
+
+  auto movedFiles =
+      Utility::removeRedundantMovedFiles<std::vector<FileQueueEntry>>(
+          updated.dirsToMove, updated.filesToMove);
+  auto deletedFiles =
+      Utility::removeRedundantMovedFiles<std::vector<FileQueueEntry>>(
+          updated.foldersToDeleteLocal, updated.filesToDeleteLocal);
+  auto reducedDeletedDirs = Utility::reduceDirs(updated.foldersToDeleteLocal);
+
+  updated.filesToMove = movedFiles;
+  updated.filesToDeleteLocal = deletedFiles;
+  updated.foldersToDeleteLocal = reducedDeletedDirs;
 
   std::cout << "[offline reconcile] filesToDownload : "
             << updated.filesToDownload.size() << std::endl;
@@ -572,9 +590,9 @@ void ReconciliationService::reconcileLocalState(
       updated.filesToDownload, updated.filesToDeleteLocal,
       updated.foldersToCreateLocal, updated.foldersToDeleteLocal, filesToModify,
       updated.filesToMove, updated.dirsToMove);
-
   std::cout << "[reconcile] isLocalDBUPdated : " << isLocalDBUpdated
             << std::endl;
+  return isLocalDBUpdated;
 }
 
 } // namespace sync_app

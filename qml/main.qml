@@ -8,11 +8,15 @@ ApplicationWindow {
     width: 1200
     height: 800
     visible: true
-    title: "Aura Cloud Sync"
+    title: "QDrive Cloud Sync"
     color: Theme.bgDark
 
+// ── FontAwesome fonts ──────────────────────────────────────────────────────
+    FontLoader { id: faSolid;   source: "qrc:/assets/fonts/fa-solid-900.otf"   }
+    FontLoader { id: faRegular; source: "qrc:/assets/fonts/fa-regular-400.otf" }
+    FontLoader { id: faBrands;  source: "qrc:/assets/fonts/fa-brands-400.otf"  }
     // Ambient background glow
-    Rectangle {
+/*    Rectangle {
         anchors.fill: parent
         gradient: Gradient {
             orientation: Gradient.Horizontal
@@ -21,14 +25,14 @@ ApplicationWindow {
             GradientStop { position: 1.0; color: "#12101A" }
         }
     }
-
+*/
     // ── Title Bar ─────────────────────────────────────────────────────────────
     Item {
         id: titleBar
         width: parent.width
         height: 44
         z: 100
-
+/*
         // macOS traffic-light dots
         Row {
             anchors.left: parent.left
@@ -43,7 +47,6 @@ ApplicationWindow {
                 }
             }
         }
-
         // Drag-to-move
         MouseArea {
             anchors.fill: parent
@@ -54,8 +57,8 @@ ApplicationWindow {
                 window.y += mouse.y - clickPos.y
             }
         }
+        */
     }
-
     // ── App Container ─────────────────────────────────────────────────────────
     Rectangle {
         anchors.top: titleBar.bottom
@@ -103,7 +106,7 @@ ApplicationWindow {
                             }
                         }
                         Text {
-                            text: "Aura Cloud Sync"
+                            text: "QDrive Cloud Sync"
                             color: Theme.textPrimary
                             font.pixelSize: 14
                             font.weight: Font.Medium
@@ -120,18 +123,17 @@ ApplicationWindow {
 
                         Repeater {
                             model: [
-                                { label: "Home",     sub: "Dashboard", icon: "⌂",  view: "qrc:/AuraUI/DashboardView.qml" },
-                                { label: "Syncing",  sub: "Active",    icon: "↻",  view: "qrc:/AuraUI/ActivityView.qml"  },
-                                { label: "Files",    sub: "Folders",   icon: "🗂", view: "qrc:/AuraUI/ExplorerView.qml"  },
-                                { label: "Sharing",  sub: "Links",     icon: "⎇",  view: ""                              },
-                                { label: "Backups",  sub: "Snapshots", icon: "⏱",  view: ""                              },
-                                { label: "Settings", sub: "Config",    icon: "⚙",  view: "qrc:/AuraUI/SettingsView.qml"  }
+                                { label: "Home",     sub: "Dashboard", icon: "\uf015", view: "qrc:/AuraUI/DashboardView.qml" },
+                                { label: "Syncing",  sub: "Active",    icon: "\uf021", view: "qrc:/AuraUI/ActivityView.qml"  },
+                                { label: "Files",    sub: "Folders",   icon: "\uf07c", view: "qrc:/AuraUI/ExplorerView.qml"  },
+                                { label: "Sharing",  sub: "Links",     icon: "\uf0c1", view: ""                              },
+                                { label: "Backups",  sub: "Snapshots", icon: "\uf1da", view: ""                              },
+                                { label: "Settings", sub: "Config",    icon: "\uf013", view: "qrc:/AuraUI/SettingsView.qml"  }
                             ]
-
                             delegate: Rectangle {
                                 width: navMenu.width
                                 height: 54
-                                radius: 10
+                                radius: 10 
                                 color: navMenu.activeIndex === index
                                        ? "#15FFFFFF" : "transparent"
                                 border.color: navMenu.activeIndex === index
@@ -242,7 +244,7 @@ ApplicationWindow {
                             Column {
                                 anchors.verticalCenter: parent.verticalCenter
                                 spacing: 2
-                                Text { text: "Alex R.";  color: Theme.textPrimary;   font.pixelSize: 13; font.weight: Font.Medium }
+                                Text { text: "Sandeep Kumar G R";  color: Theme.textPrimary;   font.pixelSize: 13; font.weight: Font.Medium }
                                 Text { text: "Online";   color: Theme.successGreen;  font.pixelSize: 10 }
                             }
                         }

@@ -35,7 +35,7 @@ public:
             const std::vector<FileMetadata> &dbFiles,
             const std::vector<DirectoryMetadata> &dbDirs);
 
-  void reconcileLocalState(const std::vector<ScannedFile> &scannedFiles,
+  bool reconcileLocalState(const std::vector<ScannedFile> &scannedFiles,
                            const std::vector<ScannedDirectory> &scannedDirs);
 
 private:

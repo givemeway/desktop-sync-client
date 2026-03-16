@@ -6,6 +6,78 @@ import AuraUI 1.0
 Item {
     id: activityRoot
 
+    // ── Status icon helper ────────────────────────────────────────────────────
+    function statusIcon(s) {
+        switch(s) {
+            case "syncing":     return "\uf021"  // rotate/sync
+            case "queued":      return "\uf017"  // clock
+            case "done":        return "\uf058"  // check circle
+            case "error":       return "\uf057"  // x circle
+            default:            return "\uf111"  // circle
+        }
+    }
+
+    function statusColor(s) {
+        switch(s) {
+            case "syncing":     return Theme.auraCyan
+            case "queued":      return Theme.auraBlue
+            case "done":        return Theme.successGreen
+            case "error":       return Theme.errorRed
+            default:            return Theme.textSecondary
+        }
+    }
+
+    // ── File type icon helper ─────────────────────────────────────────────────
+    function fileIcon(m) {
+        switch(m) {
+            case "folder":  return "\uf07c"  // folder open
+            case ".pdf":    return "\uf1c1"  // pdf
+            case ".zip":    return "\uf1c6"  // archive
+            case ".doc":    return "\uf1c2"  // word
+            default:        return "\uf15b"  // generic file
+        }
+    }
+    
+    function fileIconColor(m){
+       switch(s){
+            case "folder":  return "#181A20"  // bgDark
+            case ".pdf":    return "#EF4444"  // pdf
+            case ".zip":    return "#60A5FA"  // archive
+            case ".doc":    return "#181A20"  // word
+            default:        return "#181A20"  // generic file
+      }
+    }
+
+    function typeIcon(m){
+      switch(m){
+        case "upload"              : return "\uf093"
+        case "download"            : return "\uf019"
+        case "local_folder_create" : return "\uf65e"
+        case "cloud_folder_create" : return "\uf65e"
+        case "local_delete"        : return "\uf1f8"
+        case "cloud_delete"        : return "\uf1f8"
+        case "local_move"          : return "\uf362"
+        case "cloud_move"          : return "\uf362"
+        case "cloud_rename"        : return "\uf044"
+        case "local_rename"        : return "\uf044"
+        default : return "unknown"
+      }
+    }
+    function typeColor(m){
+      switch(m){
+        case "upload"              : return Theme.auraCyan
+        case "download"            : return Theme.auraBlue 
+        case "local_folder_create" : return Theme.successGreen
+        case "cloud_folder_create" : return Theme.successGreen
+        case "local_delete"        : return Theme.errorRed
+        case "cloud_delete"        : return Theme.errorRed
+        case "local_move"          : return "#BB88FF"
+        case "cloud_move"          : return "#BB88FF"
+        case "cloud_rename"        : return "#BB88FF"
+        case "local_rename"        : return "#BB88FF"
+        default                    : return Theme.textSecondary
+       }
+    }
     Column {
         anchors.fill: parent
         spacing: 20
@@ -37,7 +109,13 @@ Item {
                     anchors.left: parent.left
                     anchors.leftMargin: 12
                     spacing: 8
-                    Text { text: "🔍"; color: Theme.textSecondary; font.pixelSize: 13 }
+                    Text {
+                        text: "\uf002"
+                        font.family: "Font Awesome 6 Free"
+                        font.weight: Font.Black
+                        font.pixelSize: 13
+                        color: Theme.textSecondary
+                    }
                     Text { text: "Search files…"; color: Theme.textSecondary; font.pixelSize: 12 }
                 }
             }
@@ -121,8 +199,8 @@ Item {
                           onExited:  parent.hovered = false         // mouse leaves row
                         }
 
-                        Behavior on color { ColorAnimation { duration: 150 }
-                        }
+                        Behavior on color { ColorAnimation { duration: 150 }}
+
                         RowLayout {
                             anchors.fill: parent
                             anchors.leftMargin: 8
@@ -134,44 +212,38 @@ Item {
                                 Layout.preferredWidth: 36
                                 Layout.preferredHeight: 36
 
-                                Rectangle {
+                                Text {
+                                    id: statusIconText
                                     anchors.centerIn: parent
-                                    width: 22; height: 22; radius: 11
-                                    color: "transparent"
-                                    border.color: status == "queued" ? Theme.auraBlue : 
-                                                  status == "done" ? Theme.successGreen : 
-                                                  status == "error" ? Theme.errorRed : 
-                                                  Theme.auraCyan 
-                                    border.width: 2.5
-                                    opacity: status == "syncing" ? 1.0 : 0.7
+                                    text: activityRoot.statusIcon(status)
+                                    font.family: "Font Awesome 7 Free"
+                                    font.weight: Font.Black
+                                    font.pixelSize: 16
+                                    color: activityRoot.statusColor(status)
 
                                     RotationAnimation on rotation {
-                                        running: status == "syncing" 
+                                        running: status === "syncing"
                                         from: 0; to: 360
                                         duration: 1800
                                         loops: Animation.Infinite
                                     }
                                 }
                             }
-
                             // File icon + name
                             RowLayout {
                                 Layout.preferredWidth: 200
                                 spacing: 10
 
                                 Rectangle {
-                                    width: 30; height: 30; radius: 6
-                                    color: meta === ".pdf"    ? "#EF4444"        :
-                                           meta === ".zip"    ? "#60A5FA"        :
-                                           meta === "folder" ? Theme.successGreen :
-                                           meta === ".doc"    ? Theme.auraBlue   : "#F59E0B"
-
-                                    Text {
+                                  width: 30; height: 30; radius: 6
+                                  color: "transparent"
+                                  Text {
                                         anchors.centerIn: parent
-                                        text: meta === "folder" ? "📁" : meta.toUpperCase()
+                                        text: activityRoot.fileIcon(meta)
+                                        font.family: "Font Awesome 7 Free"
+                                        font.weight: Font.Black
+                                        font.pixelSize: 16
                                         color: "white"
-                                        font.pixelSize: meta === "folder" ? 14 : 9
-                                        font.weight: Font.Bold
                                     }
                                 }
 
@@ -186,15 +258,14 @@ Item {
                             }
 
                             Text {
-                              text: status  == "syncing" ? meta != "folder" ? percentage : status : status // done or error or progress - 0-100% for upload/download
-                                color: status == "syncing" ? Theme.textPrimary : Theme.textSecondary
-                                font.pixelSize: 12
-                                Layout.preferredWidth: 90
-                            }
-
+                                  text: status == "syncing" ? meta != "folder" ? percentage : status : status
+                                  color: status == "syncing" ? Theme.textPrimary : Theme.textSecondary
+                                  font.pixelSize: 12
+                                  Layout.preferredWidth: 90
+                              }
                             Text {
-                                text: type // downloading - uploading - folder create - folder move etc
-                                color: Theme.textSecondary
+                                text: activityRoot.typeIcon(type) // downloading - uploading - folder create - folder move etc
+                                color: activityRoot.typeColor(type)
                                 font.pixelSize: 12
                                 Layout.preferredWidth: 90
                             }

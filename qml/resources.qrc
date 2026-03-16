@@ -2,10 +2,15 @@
     <qresource prefix="/">
         <file>main.qml</file>
         <file>AuraUI/Theme.qml</file>
+        <file>AuraUI/FA.qml</file>
+        <file>AuraUI/LoginView.qml</file>
         <file>AuraUI/DashboardView.qml</file>
         <file>AuraUI/ActivityView.qml</file>
         <file>AuraUI/ExplorerView.qml</file>
         <file>AuraUI/SettingsView.qml</file>
         <file>AuraUI/qmldir</file>
-    </qresource>
+        <file>assets/fonts/fa-solid-900.otf</file>
+        <file>assets/fonts/fa-regular-400.otf</file>
+        <file>assets/fonts/fa-brands-400.otf</file>
+ </qresource>
 </RCC>

@@ -122,8 +122,11 @@ public:
                                 dst.old_path;
                                 dst.old_filename;
                               }) {
-                  dst.old_path = a;
-                  dst.old_filename = a;
+                  if (!dst.old_path.has_value()) {
+                    dst.old_path = a;
+                  } else {
+                    dst.old_filename = a;
+                  }
                 }
               }
             }(args),
@@ -346,7 +349,7 @@ public:
           if constexpr (std::is_same_v<typename T4::value_type,
                                        DirectoryQueueEntry>) {
             fd = convert<typename T4::value_type>(d, SyncStatus::DELETE,
-                                                  d.old_path);
+                                                  d.old_path.value());
           } else {
 
             fd = convert<typename T4::value_type>(d);
@@ -417,7 +420,8 @@ public:
           if constexpr (std::is_same_v<typename T2::value_type,
                                        FileQueueEntry>) {
             ff = convert<typename T2::value_type>(f, SyncStatus::DELETE,
-                                                  f.old_path, f.old_filename);
+                                                  f.old_path.value(),
+                                                  f.old_filename.value());
           } else {
             ff = convert<typename T2::value_type>(f);
           }
@@ -465,7 +469,7 @@ public:
       if (itNewPath != movedFilesPathMap.end()) {
         for (auto &f : itNewPath->second) {
 
-          if (d.old_path != *f.old_path) {
+          if (d.old_path.value() != f.old_path.value()) {
             filesTomove.push_back(f);
           }
         }

@@ -1,2 +1,3 @@
 module AuraUI
 singleton Theme 1.0 Theme.qml
+singleton FA    1.0 FA.qml

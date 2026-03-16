@@ -600,12 +600,18 @@ bool DatabaseManager::reconcileLocalState(
             //            dq.sync_status = syncStatusToString(SyncStatus::NEW);
             return dq;
           });
-      // insert dirs into main table
+
+      /*
       m_impl->storage.replace_range<DirectoryMetadata>(dirsInMain.begin(),
+
                                                        dirsInMain.end());
-      // insert dirs into queue table
       m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
                                                          dirsInQ.end());
+      */
+      // insert dirs into main table
+      batchedReplace<DirectoryMetadata>(m_impl->storage, dirsInMain);
+      // insert dirs into queue table
+      batchedReplace<DirectoryQueueEntry>(m_impl->storage, dirsInQ);
       // clear queue dirs
       dirsInQ.clear();
       dirsInQMap.clear();
@@ -668,16 +674,21 @@ bool DatabaseManager::reconcileLocalState(
       std::transform(dirsInQMap.begin(), dirsInQMap.end(),
                      std::back_inserter(dirsInQ),
                      [&](const auto &pair) { return pair.second; });
-
+      /*
+        m_impl->storage.replace_range<FileMetadata>(filesInMain.begin(),
+                                                    filesInMain.end());
+        m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
+                                                           dirsInQ.end());
+        m_impl->storage.replace_range<FileQueueEntry>(filesInQ.begin(),
+                                                      filesInQ.end());
+         */
       // adding files into main table
-      m_impl->storage.replace_range<FileMetadata>(filesInMain.begin(),
-                                                  filesInMain.end());
+      batchedReplace<FileMetadata>(m_impl->storage, filesInMain);
       // adding dirQ into Queue table
-      m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
-                                                         dirsInQ.end());
+      batchedReplace<DirectoryQueueEntry>(m_impl->storage, dirsInQ);
       // adding filesQ into Queue table
-      m_impl->storage.replace_range<FileQueueEntry>(filesInQ.begin(),
-                                                    filesInQ.end());
+      batchedReplace<FileQueueEntry>(m_impl->storage, filesInQ);
+
       dirsInQ.clear();
       dirsInQMap.clear();
       filesInQ.clear();
@@ -739,16 +750,23 @@ bool DatabaseManager::reconcileLocalState(
                      std::back_inserter(dirsInQ),
                      [&](const auto &pair) { return pair.second; });
 
-      // adding modified files to main
+      /*
       m_impl->storage.replace_range<FileMetadata>(filesInMain.begin(),
                                                   filesInMain.end());
-      // insert dirQ into queue
+      //
       m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
                                                          dirsInQ.end());
-
-      // adding modified files to Queue
       m_impl->storage.replace_range<FileQueueEntry>(filesInQ.begin(),
                                                     filesInQ.end());
+      */
+
+      // adding modified files to main
+      batchedReplace<FileMetadata>(m_impl->storage, filesInMain);
+      // insert dirQ into queue
+      batchedReplace<DirectoryQueueEntry>(m_impl->storage, dirsInQ);
+      // adding modified files to Queue
+      batchedReplace<FileQueueEntry>(m_impl->storage, filesInQ);
+
       filesInMain.clear();
       filesInQ.clear();
       dirsInQMap.clear();
@@ -793,11 +811,14 @@ bool DatabaseManager::reconcileLocalState(
                      [&](const auto &pair) { return pair.second; });
 
       // insert sync status for the files to be deleted in queue table
-
-      m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
-                                                         dirsInQ.end());
-      m_impl->storage.replace_range<FileQueueEntry>(filesInQ.begin(),
-                                                    filesInQ.end());
+      /*
+            m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
+                                                               dirsInQ.end());
+            m_impl->storage.replace_range<FileQueueEntry>(filesInQ.begin(),
+                                                          filesInQ.end());
+            */
+      batchedReplace<DirectoryQueueEntry>(m_impl->storage, dirsInQ);
+      batchedReplace<FileQueueEntry>(m_impl->storage, filesInQ);
 
       filesInQ.clear();
       dirsInQ.clear();
@@ -834,8 +855,9 @@ bool DatabaseManager::reconcileLocalState(
                     });
 
       // insert removed dirs in the queue
-      m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
-                                                         dirsInQ.end());
+      // m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
+      //                                                  dirsInQ.end());
+      batchedReplace<DirectoryQueueEntry>(m_impl->storage, dirsInQ);
 
       dirsInQ.clear();
       dirsInMain.clear();
@@ -851,7 +873,9 @@ bool DatabaseManager::reconcileLocalState(
                        movedDirsMap[dq.path] = dq;
                        return Utility::constructDirectoryMetadata(dq);
                      });
-      m_impl->storage.replace_range(dirsInMain.begin(), dirsInMain.end());
+      // m_impl->storage.replace_range<DirectoryMetadata>(dirsInMain.begin(),
+      //                                                 dirsInMain.end());
+      batchedReplace<DirectoryMetadata>(m_impl->storage, dirsInMain);
       //      m_impl->storage.replace_range(dirsToMove.begin(),
       //      dirsToMove.end());
       // **************************************************************************
@@ -958,14 +982,21 @@ bool DatabaseManager::reconcileLocalState(
                      std::back_inserter(dirsInMain),
                      [&](const auto &pair) { return pair.second; });
 
-      m_impl->storage.replace_range<DirectoryMetadata>(dirsInMain.begin(),
-                                                       dirsInMain.end());
-      m_impl->storage.replace_range<FileMetadata>(filesInMain.begin(),
-                                                  filesInMain.end());
-      m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
-                                                         dirsInQ.end());
-      m_impl->storage.replace_range<FileQueueEntry>(filesInQ.begin(),
-                                                    filesInQ.end());
+      batchedReplace<DirectoryMetadata>(m_impl->storage, dirsInMain);
+      batchedReplace<FileMetadata>(m_impl->storage, filesInMain);
+      batchedReplace<DirectoryQueueEntry>(m_impl->storage, dirsInQ);
+      batchedReplace<FileQueueEntry>(m_impl->storage, filesInQ);
+      /*
+            m_impl->storage.replace_range<DirectoryMetadata>(dirsInMain.begin(),
+                                                             dirsInMain.end());
+            m_impl->storage.replace_range<FileMetadata>(filesInMain.begin(),
+                                                        filesInMain.end());
+            m_impl->storage.replace_range<DirectoryQueueEntry>(dirsInQ.begin(),
+                                                               dirsInQ.end());
+
+            m_impl->storage.replace_range<FileQueueEntry>(filesInQ.begin(),
+                                                          filesInQ.end());
+      */
       return true;
       //****************************************************************************
     });

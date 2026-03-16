@@ -1114,34 +1114,23 @@ CloudSyncWorker::createFolderInCloud(DirectoryQueueEntry &dq) {
 std::optional<bool> CloudSyncWorker::uploadFile(ApiClient &client,
                                                 const FileQueueEntry &fq) {
 
-  std::vector<DirectoryMetadata> dirTree;
-  std::vector<std::string> pathComponents = getPathComponents(fq.path);
-
-  std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
-  for (auto &path : pathComponents) {
-    pathParts p = m_dbManager.getFolderDevice(fs::path(path));
-    std::optional<DirectoryMetadata> dir{std::nullopt};
-    dir = m_dbManager.getDirectoryByPath(p.device, p.folder, path);
-    if (dir.has_value()) {
-      dirTree.push_back(dir.value());
-    } else {
-      return false;
-    }
-  }
+  using DirTree = std::optional<std::vector<DirectoryMetadata>>;
+  DirTree dirTree = getFileDirTree(fq);
 
   FileMetadata f = constructFileMetadata(fq);
-  //  bool isUploaded = client.uploadFile(fq, dirTree);
-  bool isUploaded = client.uploadFile(
-      fq, dirTree, false, [this](const std::string &key, double progress) {
-        auto it = m_activityStore.getActivity(key);
-        if (it.has_value()) {
-          it->progress = progress;
-          it->isActive = true;
-          it->inQueue = false;
-          it->isDone = progress >= 100.0;
-          updateActivity(key, it.value());
-        }
-      });
+
+  bool isUploaded =
+      client.uploadFile(fq, dirTree.value(), false,
+                        [this](const std::string &key, double progress) {
+                          auto it = m_activityStore.getActivity(key);
+                          if (it.has_value()) {
+                            it->progress = progress;
+                            it->isActive = true;
+                            it->inQueue = false;
+                            it->isDone = progress >= 100.0;
+                            updateActivity(key, it.value());
+                          }
+                        });
 
   bool isFileUpdated = false;
 
@@ -1179,7 +1168,6 @@ std::optional<bool>
 CloudSyncWorker::uploadModifiedFile(ApiClient &client,
                                     const FileQueueEntry &fq) {
   // update file
-  //  bool isUploaded = client.uploadFile(fq, {}, true);
   bool isUploaded = client.uploadFile(
       fq, {}, true, [this](const std::string &key, double progress) {
         auto it = m_activityStore.getActivity(key);
@@ -1275,10 +1263,13 @@ std::optional<bool> CloudSyncWorker::deleteFile(ApiClient &client,
 std::optional<std::vector<DirectoryMetadata>>
 
 CloudSyncWorker::getFileDirTree(const FileQueueEntry &fq) {
+
   std::vector<DirectoryMetadata> dirTree;
+
   std::vector<std::string> pathComponents = getPathComponents(fq.path);
 
   std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+
   for (auto &path : pathComponents) {
     pathParts p = m_dbManager.getFolderDevice(fs::path(path));
     std::optional<DirectoryMetadata> dir{std::nullopt};
@@ -1398,7 +1389,6 @@ void CloudSyncWorker::processQueueToSyncUp() {
       m_uploadThreadPool.enqueue(std::move(uploadFunc));
     }
   }
-  /*
   std::optional<std::vector<FileQueueEntry>> queueFiles{std::nullopt};
   std::optional<std::vector<DirectoryQueueEntry>> queueDirs{std::nullopt};
   {
@@ -1420,7 +1410,6 @@ void CloudSyncWorker::processQueueToSyncUp() {
       }
     }
   }
-  */
 };
 
 void CloudSyncWorker::initActivityAndPriorityQ() {

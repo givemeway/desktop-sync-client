@@ -111,8 +111,16 @@ int main(int argc, char *argv[]) {
             << "[Main] Performing initial filesystem scan in background..."
             << std::endl;
         sync_app::ScanResult scanResult = scanner.scanSyncPath(syncFolder);
-        reconciliationService.reconcileLocalState(scanResult.files,
-                                                  scanResult.directories);
+
+        bool isLocalDBSynced = reconciliationService.reconcileLocalState(
+            scanResult.files, scanResult.directories);
+        if (!isLocalDBSynced) {
+          std::cout << "[Main] Local DB Reconciliation Failed. Sync cannot be "
+                       "initialized!"
+                    << std::endl;
+          std::unique_lock<std::mutex> lock(cv_m);
+          cv.wait(lock, [&]() { return !running.load(); });
+        }
         std::cout << "[Main] Initial scan and reconciliation complete."
                   << std::endl;
 

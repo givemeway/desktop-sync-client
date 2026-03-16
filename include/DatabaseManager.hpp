@@ -161,6 +161,15 @@ public:
                            const std::vector<FileMetadata> &filesToModify,
                            const std::vector<FileQueueEntry> &filesToMove,
                            const std::vector<DirectoryQueueEntry> &dirsToMove);
+  template <typename T>
+  static void batchedReplace(auto &storage, const std::vector<T> &items,
+                             size_t batchSize = 100) {
+    for (size_t i = 0; i < items.size(); i += batchSize) {
+      auto begin = items.begin() + i;
+      auto end = items.begin() + std::min(i + batchSize, items.size());
+      storage.template replace_range<T>(begin, end);
+    }
+  }
 
 private:
   std::string m_dbPath;
