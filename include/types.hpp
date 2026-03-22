@@ -291,6 +291,17 @@ struct ActivityItem {
   QString size = "0B";
 };
 
+struct ExplorerItem {
+  QString id;
+  QString name;
+  QString type = "folder";
+  QString size = "0B";
+  QString versions;
+  QString lastModified;
+  QString path;
+  bool isSelected = false;
+};
+
 inline void from_json(const nlohmann::json &j, CloudFileMetadata &f) {
   f.uuid = j.value("uuid", "");
   f.dirID = j.value("dirID", "");

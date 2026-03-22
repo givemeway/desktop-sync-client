@@ -152,7 +152,7 @@ Item {
                 width: parent.width
 
                 Text {
-                    text: "Local folder that Aura keeps in sync with the cloud."
+                    text: "Local folder that QDrive keeps in sync with the cloud."
                     font.pixelSize: 12
                     color: Theme.textSecondary
                 }

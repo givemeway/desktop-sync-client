@@ -33,9 +33,6 @@ public:
 
   pathParts static getFolderDevice(const std::filesystem::path &path);
 
-  ReconciliationResult static detectDirRenames(
-      const ReconciliationResult &result);
-
   template <typename Target, typename Source, typename... Args>
 
   Target static convert(const Source &src, Args... args) {

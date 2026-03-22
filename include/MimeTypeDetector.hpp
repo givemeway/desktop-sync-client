@@ -3,7 +3,6 @@
 #include "stb_image.h"
 #include <algorithm>
 #include <filesystem>
-#include <iostream>
 #include <string>
 #include <unordered_map>
 #ifdef HAVE_LIBMAGIC
@@ -140,14 +139,14 @@ public:
     return getMimeByExtension(filepath);
   }
 
-  std::optional<magic_t> getMagicCookie() {
 #ifdef HAVE_LIBMAGIC
+  std::optional<magic_t> getMagicCookie() {
     if (libmagic_available) {
       return magic_cookie;
     }
     return std::nullopt;
-#endif
   }
+#endif
 
   bool isUsingLibmagic() const {
 #ifdef HAVE_LIBMAGIC
@@ -156,28 +155,29 @@ public:
     return false;
 #endif
   }
+  /*
+    std::optional<ImageDimensions> getImageDims(const std::string &filepath,
+                                                magic_t magicCookie) {
+      const char *mimeType = magic_file(magicCookie, filepath.c_str());
+      if (!mimeType || std::string(mimeType).find("image/") != 0) {
+        return std::nullopt;
+      }
+      std::cout << "[MIME] Image Detected:" << mimeType << std::endl;
+      int width, height, channels;
+      unsigned char *img_data =
+          stbi_load(filepath.c_str(), &width, &height, &channels, 0);
+      if (!img_data) {
+        std::cerr << "[MIME] Failed to Load Image: " << filepath << std::endl;
+        return std::nullopt;
+      }
+      ImageDimensions dims;
+      dims.width = width;
+      dims.height = height;
+      std::cout << "[IMAGE] " << filepath << " : " << dims.width << "x"
+                << dims.height << std::endl;
+      stbi_image_free(img_data);
 
-  std::optional<ImageDimensions> getImageDims(const std::string &filepath,
-                                              magic_t magicCookie) {
-    const char *mimeType = magic_file(magicCookie, filepath.c_str());
-    if (!mimeType || std::string(mimeType).find("image/") != 0) {
-      return std::nullopt;
+      return dims;
     }
-    std::cout << "[MIME] Image Detected:" << mimeType << std::endl;
-    int width, height, channels;
-    unsigned char *img_data =
-        stbi_load(filepath.c_str(), &width, &height, &channels, 0);
-    if (!img_data) {
-      std::cerr << "[MIME] Failed to Load Image: " << filepath << std::endl;
-      return std::nullopt;
-    }
-    ImageDimensions dims;
-    dims.width = width;
-    dims.height = height;
-    std::cout << "[IMAGE] " << filepath << " : " << dims.width << "x"
-              << dims.height << std::endl;
-    stbi_image_free(img_data);
-
-    return dims;
-  }
+    */
 };

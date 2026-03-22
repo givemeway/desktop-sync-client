@@ -67,10 +67,10 @@ add_executable(sync_client
   )
 
 # Find libmagic from vcpkg
-find_package(unofficial-libmagic REQUIRED)
-add_definitions(-DHAVE_LIBMAGIC)
-add_definitions(-DMAGIC_DB_PATH="${unofficial-libmagic_DICTIONARY}")
-message(STATUS "libmagic found - using content-based MIME detection")
+#find_package(unofficial-libmagic REQUIRED)
+#add_definitions(-DHAVE_LIBMAGIC)
+#add_definitions(-DMAGIC_DB_PATH="${unofficial-libmagic_DICTIONARY}")
+#message(STATUS "libmagic found - using content-based MIME detection")
 
 find_package(efsw CONFIG REQUIRED)
 message(STATUS "EFSW found")
@@ -96,6 +96,12 @@ message(STATUS "Sqliteorm found")
 
 find_path(STB_INCLUDE_DIR "stb_image.h")
 
+#set(LIBMAGIC_INCLUDE_DIR "C:/msys64/mingw64/include")
+#set(LIBMAGIC_LIBRARY "C:/msys64/mingw64/lib/libmagic.dll.a")
+
+#add_definitions(-DHAVE_LIBMAGIC)
+#add_definitions(-DMAGIC_DB_PATH="C:/msys64/mingw64/share/misc/magic.mgc")
+
 foreach(VAR PICOSHA2_INCLUDES_DIRS STB_INCLUDE_DIR HTTPLIB_INCLUDES_DIRS)
     if(NOT ${VAR}) 
          message(STATUS "${VAR} not found")
@@ -119,7 +125,6 @@ if(WIN32)
       target_link_libraries(sync_client PRIVATE
         ws2_32 
         crypt32 
-        unofficial::libmagic::libmagic 
         pthread 
         efsw::efsw 
         nlohmann_json::nlohmann_json 
@@ -133,12 +138,12 @@ if(WIN32)
         Qt6::QuickControls2
         Qt6::QuickEffects
         OpenSSL::SSL OpenSSL::Crypto
-      )
+        #        ${LIBMAGIC_LIBRARY}      
+        )
     else()
       target_link_libraries(sync_client PRIVATE 
         ws2_32 
         crypt32 
-        unofficial::libmagic::libmagic 
         efsw::efsw 
         nlohmann_json::nlohmann_json 
         CURL::libcurl
@@ -151,12 +156,12 @@ if(WIN32)
         Qt6::QuickControls2
         Qt6::QuickEffects
         OpenSSL::SSL OpenSSL::Crypto
-      )
+        #${LIBMAGIC_LIBRARY}
+    )
     endif()
 else()
   target_link_libraries(sync_client 
     pthread 
-    unofficial::libmagic::libmagic 
     efsw::efsw 
     nlohmann_json::nlohmann_json 
     CURL::libcurl
@@ -178,8 +183,13 @@ target_include_directories(sync_client PRIVATE
     ${STB_INCLUDE_DIR}
 )
 
+#target_include_directories(
+#  sync_client PRIVATE ${LIBMAGIC_INCLUDE_DIR}
+#)
+
 # Installation rules for packaging
 install(TARGETS sync_client DESTINATION bin)
+
 # Create qt.conf so Qt can locate QML and plugin dirs relative to the exe
 file(WRITE "${CMAKE_BINARY_DIR}/qt.conf"
 "[Paths]
@@ -194,12 +204,14 @@ install(FILES "${CMAKE_BINARY_DIR}/qt.conf" DESTINATION bin)
 # Copy runtime dependencies (DLLs on Windows, .so on Linux, .dylib on macOS)
 if(WIN32)
     # 1. Copy libmagic DLL
-    install(FILES $<TARGET_FILE:unofficial::libmagic::libmagic> DESTINATION bin)
+    #install(FILES $<TARGET_FILE:unofficial::libmagic::libmagic> DESTINATION bin)
+
     
     # 2. Run windeployqt for Qt dependencies
-    get_target_property(_qt_bin_dir Qt6::Core LOCATION)
-    get_filename_component(_qt_bin_dir "${_qt_bin_dir}" DIRECTORY)
-    find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${_qt_bin_dir}")
+    set(WINDEPLOYQT_EXECUTABLE "F:/Qt/6.10.2/mingw_64/bin/windeployqt.exe")
+    #get_target_property(_qt_bin_dir Qt6::Core LOCATION)
+    #get_filename_component(_qt_bin_dir "${_qt_bin_dir}" DIRECTORY)
+    #find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${_qt_bin_dir}")
 
     if(WINDEPLOYQT_EXECUTABLE)
         add_custom_command(TARGET sync_client POST_BUILD
@@ -213,11 +225,6 @@ if(WIN32)
         )
     endif()
 
-    # Copy magic database files for libmagic
-    install(DIRECTORY ${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/libmagic/
-            DESTINATION bin/magic
-            FILES_MATCHING PATTERN "*")
-    
     # Copy MinGW runtime DLLs
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         get_filename_component(MINGW_BIN_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)

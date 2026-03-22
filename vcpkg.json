@@ -4,7 +4,6 @@
   "version": "1.0.0",
   "description": "Cross-platform desktop sync client",
   "dependencies": [
-    "libmagic",
     "sqlite3",
     "sqlite-orm",
     "efsw",

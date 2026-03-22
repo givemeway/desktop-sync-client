@@ -1404,6 +1404,13 @@ bool DatabaseManager::deleteFileQueue(const std::string &path,
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
     m_impl->storage.remove<FileQueueEntry>(path, filename);
+    auto dirFiles = m_impl->storage.get_all<FileQueueEntry>(
+        where(c(&FileQueueEntry::path) == path) ||
+        like(&FileQueueEntry::path, path + "/%"));
+    if (dirFiles.empty()) {
+      m_impl->storage.remove_all<DirectoryQueueEntry>(
+          where(c(&DirectoryQueueEntry::path) == path));
+    }
     return true;
   } catch (const std::exception &e) {
     std::cerr << "[DB] Error deleting ->" << path << "/" << filename

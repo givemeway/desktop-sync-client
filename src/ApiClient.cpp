@@ -380,18 +380,20 @@ bool ApiClient::uploadFile(const FileQueueEntry &file,
     // Detect MIME type on-the-fly using libmagic
     MimeTypeDetector detector;
     std::string detectedMime = detector.getMimeType(file.absPath);
-    magic_t magicCookie = *detector.getMagicCookie();
+    //    magic_t magicCookie = *detector.getMagicCookie();
     if (!detectedMime.empty()) {
       filestat["type"] = detectedMime;
       if (detectedMime.starts_with("image/")) {
-        auto maybeDims = detector.getImageDims(file.absPath, magicCookie);
-        if (maybeDims.has_value()) {
-          filestat["height"] = maybeDims->height;
-          filestat["width"] = maybeDims->width;
-        } else {
-          filestat["height"] = 0;
-          filestat["width"] = 0;
-        }
+        filestat["height"] = 0;
+        filestat["width"] = 0; /*auto maybeDims =
+       detector.getImageDims(file.absPath, magicCookie); if
+       (maybeDims.has_value()) { filestat["height"] = maybeDims->height;
+         filestat["width"] = maybeDims->width;
+       } else {
+         filestat["height"] = 0;
+         filestat["width"] = 0;
+       }
+       */
       }
     } else {
       filestat["type"] = "file";
@@ -443,11 +445,13 @@ bool ApiClient::uploadFile(const FileQueueEntry &file,
 
     MimeTypeDetector detector;
     std::string detectedMime = detector.getMimeType(file.absPath);
-    magic_t magicCookie = *detector.getMagicCookie();
+    // magic_t magicCookie = *detector.getMagicCookie();
     if (!detectedMime.empty()) {
       filestat["type"] = detectedMime;
       if (detectedMime.starts_with("image/")) {
-        auto maybeDims = detector.getImageDims(file.absPath, magicCookie);
+        filestat["height"] = 0;
+        filestat["width"] = 0;
+        /*auto maybeDims = detector.getImageDims(file.absPath, magicCookie);
         if (maybeDims.has_value()) {
           filestat["height"] = maybeDims->height;
           filestat["width"] = maybeDims->width;
@@ -455,6 +459,7 @@ bool ApiClient::uploadFile(const FileQueueEntry &file,
           filestat["height"] = 0;
           filestat["width"] = 0;
         }
+        */
       }
     } else {
       filestat["type"] = "file";

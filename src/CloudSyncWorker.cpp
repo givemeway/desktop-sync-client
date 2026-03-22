@@ -346,7 +346,7 @@ void CloudSyncWorker::processFilesToDownload(
         std::cout << "[cloudsyncworker] tasks: " << m_tasksPending << std::endl;
         if (m_tasksPending == 0) {
           std::cout << "[cloudsyncworker] LAST TASK PROCESSED: " << std::endl;
-          m_tasksCV.notify_all();
+          m_tasksCV.notify_one();
         }
         return false;
       }
@@ -413,7 +413,7 @@ void CloudSyncWorker::processFilesToDownload(
                     << std::endl;
           if (m_tasksPending == 0) {
             std::cout << "[cloudsyncworker] LAST TASK PROCESSED: " << std::endl;
-            m_tasksCV.notify_all();
+            m_tasksCV.notify_one();
           }
           return true;
         } else {
@@ -422,7 +422,7 @@ void CloudSyncWorker::processFilesToDownload(
                     << std::endl;
           if (m_tasksPending == 0) {
             std::cout << "[cloudsyncworker] LAST TASK PROCESSED: " << std::endl;
-            m_tasksCV.notify_all();
+            m_tasksCV.notify_one();
           }
           return false;
         }
@@ -447,7 +447,7 @@ void CloudSyncWorker::processFilesToDownload(
         std::cout << "[cloudsyncworker] tasks: " << m_tasksPending << std::endl;
         if (m_tasksPending == 0) {
           std::cout << "[cloudsyncworker] LAST TASK PROCESSED: " << std::endl;
-          m_tasksCV.notify_all();
+          m_tasksCV.notify_one();
         }
         return false;
       }
@@ -962,9 +962,9 @@ CloudSyncWorker::deleteFolderInCloud(DirectoryQueueEntry &dq) {
   }
   bool isCreated = m_apiClient.deleteFolder(dq);
 
-  --m_upSyncTasks;
-  if (m_upSyncTasks == 0) {
-    m_upSyncTasksCV.notify_all();
+  --m_syncWorker.getUpSyncTasks();
+  if (m_syncWorker.getUpSyncTasks() == 0) {
+    m_syncWorker.getUpSyncCV().notify_one();
   }
 
   if (!isCreated) {
@@ -1013,9 +1013,9 @@ std::optional<bool> CloudSyncWorker::moveFolderInCloud(DirectoryQueueEntry &dq,
 
   bool isRenamed = m_apiClient.moveFolder(dq, isRename);
 
-  --m_upSyncTasks;
-  if (m_upSyncTasks == 0) {
-    m_upSyncTasksCV.notify_all();
+  --m_syncWorker.getUpSyncTasks();
+  if (m_syncWorker.getUpSyncTasks() == 0) {
+    m_syncWorker.getUpSyncCV().notify_one();
   }
 
   if (!isRenamed) {
@@ -1073,9 +1073,9 @@ CloudSyncWorker::createFolderInCloud(DirectoryQueueEntry &dq) {
 
   bool isCreated = m_apiClient.createFolder(dq);
 
-  --m_upSyncTasks;
-  if (m_upSyncTasks == 0) {
-    m_upSyncTasksCV.notify_all();
+  --m_syncWorker.getUpSyncTasks();
+  if (m_syncWorker.getUpSyncTasks() == 0) {
+    m_syncWorker.getUpSyncCV().notify_one();
   }
 
   if (!isCreated) {
@@ -1134,9 +1134,9 @@ std::optional<bool> CloudSyncWorker::uploadFile(ApiClient &client,
 
   bool isFileUpdated = false;
 
-  --m_upSyncTasks;
-  if (m_upSyncTasks == 0) {
-    m_upSyncTasksCV.notify_all();
+  --m_syncWorker.getUpSyncTasks();
+  if (m_syncWorker.getUpSyncTasks() == 0) {
+    m_syncWorker.getUpSyncCV().notify_one();
   }
 
   if (!isUploaded) {
@@ -1183,9 +1183,9 @@ CloudSyncWorker::uploadModifiedFile(ApiClient &client,
   FileMetadata f = constructFileMetadata(fq);
   bool isFileUpdated = false;
 
-  --m_upSyncTasks;
-  if (m_upSyncTasks == 0) {
-    m_upSyncTasksCV.notify_all();
+  --m_syncWorker.getUpSyncTasks();
+  if (m_syncWorker.getUpSyncTasks() == 0) {
+    m_syncWorker.getUpSyncCV().notify_one();
   }
 
   if (!isUploaded) {
@@ -1222,9 +1222,9 @@ std::optional<bool> CloudSyncWorker::deleteFile(ApiClient &client,
   bool isUploaded = client.deleteFile(fq);
   bool isFileUpdated = false;
 
-  --m_upSyncTasks;
-  if (m_upSyncTasks == 0) {
-    m_upSyncTasksCV.notify_all();
+  --m_syncWorker.getUpSyncTasks();
+  if (m_syncWorker.getUpSyncTasks() == 0) {
+    m_syncWorker.getUpSyncCV().notify_one();
   }
   if (!isUploaded) {
     std::cout << "[cloudsyncworker] unable to delete file in cloud: "
@@ -1296,9 +1296,9 @@ std::optional<bool> CloudSyncWorker::renameFile(ApiClient &client,
   FileMetadata f = constructFileMetadata(fq);
   bool isFileUpdated = false;
 
-  --m_upSyncTasks;
-  if (m_upSyncTasks == 0) {
-    m_upSyncTasksCV.notify_all();
+  --m_syncWorker.getUpSyncTasks();
+  if (m_syncWorker.getUpSyncTasks() == 0) {
+    m_syncWorker.getUpSyncCV().notify_one();
   }
 
   if (!isUploaded) {
@@ -1338,77 +1338,51 @@ std::optional<bool> CloudSyncWorker::renameFile(ApiClient &client,
 
 void CloudSyncWorker::processQueueToSyncUp() {
 
-  while (!m_syncWorker.dirIsEmpty() || !m_syncWorker.fileIsEmpty()) {
-    std::optional<DirectoryQueueEntry> dq = m_syncWorker.popNextDirEntry();
+  std::optional<DirectoryQueueEntry> dq = m_syncWorker.popNextDirEntry();
 
-    if (dq.has_value()) {
-      if (dq->sync_status == syncStatusToString(SyncStatus::DELETE)) {
-        ++m_upSyncTasks;
-        deleteFolderInCloud(*dq);
-      }
-      if (dq->sync_status == syncStatusToString(SyncStatus::RENAME)) {
-        ++m_upSyncTasks;
-        moveFolderInCloud(*dq, true);
-      }
-      if (dq->sync_status == syncStatusToString(SyncStatus::MOVED)) {
-        ++m_upSyncTasks;
-        moveFolderInCloud(*dq, false);
-      }
-      if (dq->sync_status == syncStatusToString(SyncStatus::NEW)) {
-        ++m_upSyncTasks;
-        createFolderInCloud(*dq);
-      }
+  if (dq.has_value()) {
+    if (dq->sync_status == syncStatusToString(SyncStatus::DELETE)) {
+      deleteFolderInCloud(*dq);
     }
-
-    std::optional<FileQueueEntry> fq = m_syncWorker.popNextFileEntry();
-
-    if (fq.has_value()) {
-      auto clientPtr = m_apiClient.clone();
-      auto uploadFunc = [this, fq, client = std::move(clientPtr)]() mutable {
-        if (fq->sync_status == syncStatusToString(SyncStatus::DELETE)) {
-          ++m_upSyncTasks;
-          deleteFile(*client, *fq);
-        }
-        if (fq->sync_status == syncStatusToString(SyncStatus::MOVED)) {
-          ++m_upSyncTasks;
-          renameFile(*client, *fq);
-        }
-        if (fq->sync_status == syncStatusToString(SyncStatus::RENAME)) {
-          ++m_upSyncTasks;
-          renameFile(*client, *fq);
-        }
-        if (fq->sync_status == syncStatusToString(SyncStatus::NEW)) {
-          ++m_upSyncTasks;
-          uploadFile(*client, *fq);
-        }
-        if (fq->sync_status == syncStatusToString(SyncStatus::MODIFIED)) {
-          ++m_upSyncTasks;
-          uploadModifiedFile(*client, *fq);
-        }
-      };
-      m_uploadThreadPool.enqueue(std::move(uploadFunc));
+    if (dq->sync_status == syncStatusToString(SyncStatus::RENAME)) {
+      moveFolderInCloud(*dq, true);
+    }
+    if (dq->sync_status == syncStatusToString(SyncStatus::MOVED)) {
+      moveFolderInCloud(*dq, false);
+    }
+    if (dq->sync_status == syncStatusToString(SyncStatus::NEW)) {
+      createFolderInCloud(*dq);
+    }
+    if (dq->sync_status == syncStatusToString(SyncStatus::FILE_LINKED)) {
+      --m_syncWorker.getUpSyncTasks();
+      if (m_syncWorker.getUpSyncTasks() == 0) {
+        m_syncWorker.getUpSyncCV().notify_one();
+      }
     }
   }
-  std::optional<std::vector<FileQueueEntry>> queueFiles{std::nullopt};
-  std::optional<std::vector<DirectoryQueueEntry>> queueDirs{std::nullopt};
-  {
-    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
-    queueFiles = m_dbManager.getAllQueueFiles();
-    queueDirs = m_dbManager.getAllQueueDirectories();
-  }
 
-  if (queueFiles.has_value() && queueDirs.has_value()) {
+  std::optional<FileQueueEntry> fq = m_syncWorker.popNextFileEntry();
 
-    auto localDirs = *queueDirs;
-    auto localFiles = *queueFiles;
-    for (auto &dq : localDirs) {
-
-      if (dq.sync_status == syncStatusToString(SyncStatus::FILE_LINKED)) {
-        pathParts p = m_dbManager.getFolderDevice(fs::path(dq.path));
-        std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
-        m_dbManager.deleteDirectoryQueue(p.device, p.folder, dq.path);
+  if (fq.has_value()) {
+    auto clientPtr = m_apiClient.clone();
+    auto uploadFunc = [this, fq, client = std::move(clientPtr)]() mutable {
+      if (fq->sync_status == syncStatusToString(SyncStatus::DELETE)) {
+        deleteFile(*client, *fq);
       }
-    }
+      if (fq->sync_status == syncStatusToString(SyncStatus::MOVED)) {
+        renameFile(*client, *fq);
+      }
+      if (fq->sync_status == syncStatusToString(SyncStatus::RENAME)) {
+        renameFile(*client, *fq);
+      }
+      if (fq->sync_status == syncStatusToString(SyncStatus::NEW)) {
+        uploadFile(*client, *fq);
+      }
+      if (fq->sync_status == syncStatusToString(SyncStatus::MODIFIED)) {
+        uploadModifiedFile(*client, *fq);
+      }
+    };
+    m_uploadThreadPool.enqueue(std::move(uploadFunc));
   }
 };
 
@@ -1432,6 +1406,7 @@ void CloudSyncWorker::initActivityAndPriorityQ() {
       addActivity(syncItem.id, syncItem);
     }
     m_syncWorker.pushFileEntry(fq);
+    ++m_syncWorker.getUpSyncTasks();
   }
 
   for (auto &dq : qDirs.value()) {
@@ -1442,6 +1417,7 @@ void CloudSyncWorker::initActivityAndPriorityQ() {
       addActivity(syncItem.id, syncItem);
     }
     m_syncWorker.pushDirEntry(dq);
+    ++m_syncWorker.getUpSyncTasks();
   }
 }
 
@@ -1469,25 +1445,26 @@ void CloudSyncWorker::runSyncDown() {
 void CloudSyncWorker::runSyncUp() {
   while (!m_stopThread) {
 
-    std::cout << "[cloudsyncworker] processing LOCAL queue..." << std::endl;
+    std::cout << "[cloudsyncworker] processing LOCAL queue..."
+              << " | tasks : " << m_syncWorker.getUpSyncTasks().load()
+              << " | filesPQ : " << m_syncWorker.fileIsEmpty()
+              << " | dirPQ : " << m_syncWorker.dirIsEmpty() << std::endl;
 
     processQueueToSyncUp();
 
-    std::unique_lock<std::mutex> lock(m_upSyncTasksMutex);
-
-    m_upSyncTasksCV.wait(
-        lock, [this]() { return m_upSyncTasks == 0 || m_stopThread; });
-
+    std::unique_lock<std::mutex> lock(m_syncWorker.getUpSyncMutex());
+    m_syncWorker.getUpSyncCV().wait(lock, [this]() {
+      return m_syncWorker.getUpSyncTasks().load() != 0 || m_stopThread;
+    });
+    if (m_stopThread)
+      break;
+    /*
     for (int i = 0; i < 5 && !m_stopThread; ++i) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
+    */
   }
 }
-
-void CloudSyncWorker::controlThread() {
-  // reconcile
-}
-
 void CloudSyncWorker::stop() {
   m_stopThread = true;
   if (m_workerThread.joinable()) {

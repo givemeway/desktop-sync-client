@@ -2,6 +2,7 @@
 #include "FilesystemWatcher.hpp"
 #include "qobject.h"
 #include "types.hpp"
+#include <condition_variable>
 #include <string>
 #ifndef SYNC_WORKER_HPP
 #define SYNC_WORKER_HPP
@@ -50,6 +51,9 @@ public:
   std::optional<DirectoryQueueEntry> popNextDirEntry();
 
   void addActivity(const std::string &key, const SyncItem &item);
+  std::mutex &getUpSyncMutex();
+  std::condition_variable &getUpSyncCV();
+  std::atomic<size_t> &getUpSyncTasks();
 
   template <typename T>
   static std::optional<ActivityStatus> resolveActivityStatus(T &t) {

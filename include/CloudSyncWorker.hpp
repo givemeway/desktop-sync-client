@@ -51,12 +51,10 @@ private:
   std::mutex m_syncMutex;
   std::mutex m_syncDownMutex;
   std::mutex m_syncUpMutex;
-  std::condition_variable m_syncCV;
   std::atomic<size_t> m_tasksPending = 0;
   std::atomic<int> m_upSyncTasks = 0;
   std::condition_variable m_tasksCV;
   std::mutex m_tasksPendingMutex;
-  std::mutex m_upSyncTasksMutex;
   std::condition_variable m_upSyncTasksCV;
 
   bool pollCloudToSyncToLocal();

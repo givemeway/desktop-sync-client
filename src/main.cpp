@@ -1,5 +1,6 @@
 #include "ActivityStore.hpp"
 #include "ApiClient.hpp"
+#include "CloudBackupManager.hpp"
 #include "CloudSyncWorker.hpp"
 #include "DatabaseManager.hpp"
 #include "FileSystemScanner.hpp"
@@ -79,11 +80,12 @@ int main(int argc, char *argv[]) {
     sync_app::SyncWorker syncworker(dbManager, scanner, activityStore, hashPool,
                                     syncFolder);
 
+    sync_app::CloudBackupManager cloudBackup(apiClient);
     sync_app::CloudSyncWorker cloudSync(
         dbManager, apiClient, reconciliationService, scanner, syncworker,
         activityStore, uploadPool, downloadPool, syncFolder, userEmail);
 
-    sync_app::SyncController::initialize(&cloudSync, &syncworker);
+    sync_app::SyncController::initialize(&cloudSync, &syncworker, &cloudBackup);
 
     engine.rootContext()->setContextProperty(
         "syncController", sync_app::SyncController::instance());

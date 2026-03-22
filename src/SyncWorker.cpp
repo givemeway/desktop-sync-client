@@ -13,7 +13,6 @@
 #include <iostream>
 #include <mutex>
 #include <queue>
-#include <set>
 #include <string>
 #include <vector>
 namespace fs = std::filesystem;
@@ -42,18 +41,20 @@ struct SyncWorker::Impl {
                       Utility::PriorityComparator<DirectoryQueueEntry>>
       m_dirPriorityQ;
 
-  std::map<std::string, std::vector<SyncEvent>> m_eventMap;
-  std::mutex m_queueMtx;
-  std::condition_variable m_queueCV;
-  std::vector<std::thread> m_workerThreads;
-  std::atomic<bool> m_running{false};
   ThreadPool &m_threadPool;
 
+  std::map<std::string, std::vector<SyncEvent>> m_eventMap;
   std::map<std::string, WatchEvent> m_ignoreMap;
-  std::mutex m_moveMtx;
-  std::condition_variable m_moveCV;
-  std::set<std::string> m_activeInodes; // Track inodes currently being deleted
+  std::vector<std::thread> m_workerThreads;
+
+  std::atomic<bool> m_running{false};
+  std::atomic<size_t> m_upSyncTasks = 0;
+  std::mutex m_queueMtx;
+  std::mutex m_upSyncMutex;
   std::mutex m_ignoreMtx;
+
+  std::condition_variable m_queueCV;
+  std::condition_variable m_upSyncCV;
 
   Impl(DatabaseManager &dbManager, FileSystemScanner &scanner,
        ActivityStore &activityStore, ThreadPool &threadPool,
@@ -92,6 +93,14 @@ void SyncWorker::addActivity(const std::string &key, const SyncItem &item) {
   m_impl->m_activityStore.addActivity(key, item);
   emit activityAdded(key, item);
 }
+
+std::mutex &SyncWorker::getUpSyncMutex() { return m_impl->m_upSyncMutex; };
+std::condition_variable &SyncWorker::getUpSyncCV() {
+  return m_impl->m_upSyncCV;
+};
+std::atomic<size_t> &SyncWorker::getUpSyncTasks() {
+  return m_impl->m_upSyncTasks;
+};
 
 void SyncWorker::start() {
   if (m_impl->m_running)
@@ -223,7 +232,7 @@ void SyncWorker::enqueueEvent(WatchEvent event, const std::string &path,
     SyncEvent syncEvent{event, path, oldPath};
     m_impl->m_eventQueue.push(syncEvent);
   }
-  m_impl->m_queueCV.notify_one();
+  m_impl->m_queueCV.notify_all();
 }
 
 void SyncWorker::workerLoop() {
@@ -404,6 +413,8 @@ void SyncWorker::handleAdded(const std::string &path) {
       fq.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
 
       pushFileEntry(fq);
+      m_impl->m_upSyncCV.notify_all();
+      ++m_impl->m_upSyncTasks;
 
       bool isFileInserted = m_impl->m_dbManager.insertFile(f, fq);
 
@@ -446,6 +457,8 @@ void SyncWorker::handleAdded(const std::string &path) {
       dq.priority = qPriorityToInt(QPriority::FOLDER_CREATE);
 
       pushDirEntry(dq);
+      m_impl->m_upSyncCV.notify_all();
+      ++m_impl->m_upSyncTasks;
 
       m_impl->m_dbManager.insertDirectory(d, dq);
 
@@ -478,7 +491,11 @@ void SyncWorker::handleDeleted(const std::string &path) {
     dq.sync_status = syncStatusToString(SyncStatus::DELETE);
     dq.old_path = dq.path;
     dq.priority = qPriorityToInt(QPriority::FOLDER_DELETE);
+
     pushDirEntry(dq);
+    m_impl->m_upSyncCV.notify_all();
+    ++m_impl->m_upSyncTasks;
+
     m_impl->m_dbManager.deleteFolderWithTransaction(relPath, dq);
 
     auto syncItem = Utility::convertToActivity<DirectoryQueueEntry>(
@@ -500,7 +517,11 @@ void SyncWorker::handleDeleted(const std::string &path) {
                                           std::move(old_path),
                                           std::move(old_filename));
     fq.priority = qPriorityToInt(QPriority::FILE_DELETE);
+
     pushFileEntry(fq);
+    m_impl->m_upSyncCV.notify_all();
+    ++m_impl->m_upSyncTasks;
+
     m_impl->m_dbManager.deleteFile(existingFile->path, existingFile->filename,
                                    fq);
 
@@ -542,7 +563,11 @@ void SyncWorker::handleRenamed(const std::string &path,
         dq.device = n.device;
         dq.folder = n.folder;
         dq.priority = qPriorityToInt(QPriority::FOLDER_RENAME);
+
         pushDirEntry(dq);
+        m_impl->m_upSyncCV.notify_all();
+        ++m_impl->m_upSyncTasks;
+
         m_impl->m_dbManager.moveDirectory(relPath, oldRelPath, dq);
         std::cout << "[syncworker] Folder Renamed Successfully!" << std::endl;
         auto syncItem = Utility::convertToActivity<DirectoryQueueEntry>(
@@ -640,8 +665,13 @@ void SyncWorker::handleRenamed(const std::string &path,
                                               std::move(old_filename));
         fq.priority = qPriorityToInt(QPriority::FILE_RENAME);
         f.conflictId = "";
+
         pushFileEntry(fq);
+        m_impl->m_upSyncCV.notify_all();
+        ++m_impl->m_upSyncTasks;
+
         bool isRenamed = m_impl->m_dbManager.renameFile(f, fq);
+
         if (isRenamed)
           std::cout << "[syncworker] file renamed successfully" << std::endl;
         else
@@ -697,7 +727,11 @@ void SyncWorker::handleRenamed(const std::string &path,
                   << std::endl;
         return;
       }
+
       pushDirEntry(dq);
+      m_impl->m_upSyncCV.notify_all();
+      ++m_impl->m_upSyncTasks;
+
       bool isFolderMoved =
           m_impl->m_dbManager.moveDirectory(relPath, oldRelPath, dq);
 
@@ -777,6 +811,8 @@ void SyncWorker::handleRenamed(const std::string &path,
         fq.priority = qPriorityToInt(QPriority::FILE_MOVED);
 
         pushFileEntry(fq);
+        m_impl->m_upSyncCV.notify_all();
+        ++m_impl->m_upSyncTasks;
 
         bool isFileMoved = m_impl->m_dbManager.renameFile(f, fq);
 
@@ -863,7 +899,11 @@ void SyncWorker::handleModified(const std::string &path) {
       fq.priority = qPriorityToInt(QPriority::FILE_MODIFIED);
 
       f.conflictId = "";
+
       pushFileEntry(fq);
+      m_impl->m_upSyncCV.notify_all();
+      ++m_impl->m_upSyncTasks;
+
       m_impl->m_dbManager.insertFile(f, fq);
 
       auto syncItem = Utility::convertToActivity<FileQueueEntry>(
