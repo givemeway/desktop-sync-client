@@ -1,0 +1,43 @@
+cmake -B build -G "MinGW Makefiles" ^
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ^
+  -DCMAKE_BUILD_TYPE=Debug ^
+  -DCMAKE_C_COMPILER=gcc ^
+  -DCMAKE_CXX_COMPILER=g++ ^
+  -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic ^
+  -DCMAKE_FIND_USE_REGISTRY=OFF ^
+  -DQt6_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6" ^
+  -DQt6Core_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6Core" ^
+  -DQt6Gui_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6Gui" ^
+  -DQt6Quick_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6Quick" ^
+  -DQt6Qml_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6Qml" ^
+  -DQt6QuickControls2_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6QuickControls2" ^
+  -DQt6QuickEffects_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6QuickEffects"
+
+
+cmake -B build-gcc -G Ninja ^
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ^
+  -DCMAKE_BUILD_TYPE=Debug ^
+  -DCMAKE_C_COMPILER=gcc ^
+  -DCMAKE_CXX_COMPILER=g++ ^
+  -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic ^
+  -DCMAKE_FIND_USE_REGISTRY=OFF ^
+  -DQt6_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6" ^
+  -DQt6Core_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6Core" ^
+  -DQt6Gui_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6Gui" ^
+  -DQt6Quick_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6Quick" ^
+  -DQt6Qml_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6Qml" ^
+  -DQt6QuickControls2_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6QuickControls2" ^
+  -DQt6QuickEffects_DIR="C:/Qt/6.10.3/mingw_64/lib/cmake/Qt6QuickEffects"
+
+
+
+# From Developer Command Prompt for VS 2022
+
+cmake -S . -B build-msvc -G Ninja ^
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ^
+  -DCMAKE_BUILD_TYPE=Debug ^
+  -DCMAKE_TOOLCHAIN_FILE=C:/Users/sandk/desktop/vcpkg/scripts/buildsystems/vcpkg.cmake ^
+  -DVCPKG_TARGET_TRIPLET=x64-windows ^
+  -DQt6_DIR="C:/Qt/6.10.3/msvc2022_64/lib/cmake/Qt6"
+
+

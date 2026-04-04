@@ -9,7 +9,20 @@
       "installRoot": "${projectDir}\\out\\install\\${name}",
       "cmakeCommandArgs": "",
       "buildCommandArgs": "",
-      "ctestCommandArgs": ""
+      "ctestCommandArgs": "",
+      "cmakeToolchain": "C:/Users/sandk/Desktop/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "variables": [
+        {
+          "name": "VCPKG_TARGET_TRIPLET",
+          "value": "x64-windows",
+          "type": "STRING"
+        },
+        {
+          "name": "Qt6_DIR",
+          "value": "C:/Qt/6.10.3/msvc2022_64/lib/cmake/Qt6",
+          "type": "PATH"
+        }
+      ]
     }
   ]
 }

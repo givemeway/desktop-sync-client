@@ -1,20 +1,23 @@
+// CloudFilesProvider.hpp includes windows.h + cfapi.h first,
+// then undefs conflicting Windows macros (DELETE, ERROR, UNKNOWN etc.)
+// before pulling in types.hpp. All other project headers come after
+// so they see the clean namespace, not the polluted one.
 #include "CloudFilesProvider.hpp"
 
 #ifdef _WIN32
+
+#include <shlobj.h>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <vector>
 
 #include "ActivityStore.hpp"
 #include "ApiClient.hpp"
 #include "DatabaseManager.hpp"
 #include "FilesystemWatcher.hpp"
 #include "SyncWorker.hpp"
-#include "types.hpp"
-
-#include <cfapi.h>
-#include <filesystem>
-#include <iostream>
-#include <shlobj.h>   // SHChangeNotify
-#include <sstream>
-#include <vector>
 
 #pragma comment(lib, "cldapi.lib")
 #pragma comment(lib, "shell32.lib")
@@ -207,14 +210,14 @@ CF_PLACEHOLDER_CREATE_INFO CloudFilesProvider::buildFilePlaceholderInfo(
         try {
             int64_t ts = std::stoll(file.last_modified);
             LARGE_INTEGER li = unixToLargeIntFileTime(ts);
-            info.FsMetadata.LastWriteTime.dwLowDateTime  = li.LowPart;
-            info.FsMetadata.LastWriteTime.dwHighDateTime = li.HighPart;
-            info.FsMetadata.CreationTime = info.FsMetadata.LastWriteTime;
-            info.FsMetadata.LastAccessTime = info.FsMetadata.LastWriteTime;
+            info.FsMetadata.BasicInfo.LastWriteTime   = li;
+            info.FsMetadata.BasicInfo.CreationTime    = li;
+            info.FsMetadata.BasicInfo.LastAccessTime  = li;
+            info.FsMetadata.BasicInfo.ChangeTime      = li;
         } catch (...) {}
     }
 
-    info.FsMetadata.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+    info.FsMetadata.BasicInfo.FileAttributes = FILE_ATTRIBUTE_NORMAL;
     info.Flags = CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC;
 
     // Store UUID as identity blob so FETCH_DATA knows what to download
@@ -240,13 +243,13 @@ CF_PLACEHOLDER_CREATE_INFO CloudFilesProvider::buildDirPlaceholderInfo(
         try {
             int64_t ts = std::stoll(created_at);
             LARGE_INTEGER li = unixToLargeIntFileTime(ts);
-            info.FsMetadata.CreationTime.dwLowDateTime   = li.LowPart;
-            info.FsMetadata.CreationTime.dwHighDateTime  = li.HighPart;
-            info.FsMetadata.LastWriteTime  = info.FsMetadata.CreationTime;
-            info.FsMetadata.LastAccessTime = info.FsMetadata.CreationTime;
+            info.FsMetadata.BasicInfo.CreationTime   = li;
+            info.FsMetadata.BasicInfo.LastWriteTime  = li;
+            info.FsMetadata.BasicInfo.LastAccessTime = li;
+            info.FsMetadata.BasicInfo.ChangeTime     = li;
         } catch (...) {}
     }
-    info.FsMetadata.FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+    info.FsMetadata.BasicInfo.FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
     info.FsMetadata.FileSize.QuadPart = 0;
     info.Flags = CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC;
 
@@ -295,13 +298,13 @@ bool CloudFilesProvider::createFilePlaceholder(const CloudFileMetadata &file) {
         try {
             int64_t ts = std::stoll(file.last_modified);
             LARGE_INTEGER li = unixToLargeIntFileTime(ts);
-            info.FsMetadata.LastWriteTime.dwLowDateTime  = li.LowPart;
-            info.FsMetadata.LastWriteTime.dwHighDateTime = li.HighPart;
-            info.FsMetadata.CreationTime    = info.FsMetadata.LastWriteTime;
-            info.FsMetadata.LastAccessTime  = info.FsMetadata.LastWriteTime;
+            info.FsMetadata.BasicInfo.LastWriteTime   = li;
+            info.FsMetadata.BasicInfo.CreationTime    = li;
+            info.FsMetadata.BasicInfo.LastAccessTime  = li;
+            info.FsMetadata.BasicInfo.ChangeTime      = li;
         } catch (...) {}
     }
-    info.FsMetadata.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+    info.FsMetadata.BasicInfo.FileAttributes = FILE_ATTRIBUTE_NORMAL;
     info.Flags          = CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC;
     info.FileIdentity   = &identity;
     info.FileIdentityLength = sizeof(identity);
@@ -355,13 +358,13 @@ bool CloudFilesProvider::createDirPlaceholder(
         try {
             int64_t ts = std::stoll(dir.created_at);
             LARGE_INTEGER li = unixToLargeIntFileTime(ts);
-            info.FsMetadata.CreationTime.dwLowDateTime   = li.LowPart;
-            info.FsMetadata.CreationTime.dwHighDateTime  = li.HighPart;
-            info.FsMetadata.LastWriteTime  = info.FsMetadata.CreationTime;
-            info.FsMetadata.LastAccessTime = info.FsMetadata.CreationTime;
+            info.FsMetadata.BasicInfo.CreationTime   = li;
+            info.FsMetadata.BasicInfo.LastWriteTime  = li;
+            info.FsMetadata.BasicInfo.LastAccessTime = li;
+            info.FsMetadata.BasicInfo.ChangeTime     = li;
         } catch (...) {}
     }
-    info.FsMetadata.FileAttributes  = FILE_ATTRIBUTE_DIRECTORY;
+    info.FsMetadata.BasicInfo.FileAttributes  = FILE_ATTRIBUTE_DIRECTORY;
     info.FsMetadata.FileSize.QuadPart = 0;
     info.Flags           = CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC;
     info.FileIdentity    = &identity;
@@ -444,10 +447,14 @@ bool CloudFilesProvider::dehydrateFile(const std::wstring &absPath) {
     }
 
     // Dehydrate the entire file: offset 0, length -1 means "full file"
+    LARGE_INTEGER startOffset = {};
+    startOffset.QuadPart = 0;
+    LARGE_INTEGER length = {};
+    length.QuadPart = -1;   // -1 means full file
     HRESULT hr = CfDehydratePlaceholder(
         hFile,
-        /*StartingOffset=*/ 0,
-        /*Length=*/         -1,
+        startOffset,
+        length,
         CF_DEHYDRATE_FLAG_BACKGROUND,
         nullptr);
 
@@ -540,9 +547,8 @@ void CALLBACK CloudFilesProvider::onFetchData(
         opInfo.Type          = CF_OPERATION_TYPE_TRANSFER_DATA;
         opInfo.ConnectionKey = info->ConnectionKey;
         opInfo.TransferKey   = info->TransferKey;
-        opP.ParamSize        = CF_SIZE_OF_OP_PARAM(TransferData);
-        opP.TransferData.Result         = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
-        opP.TransferData.Offset         = params->FetchData.RequiredFileOffset;
+        opP.ParamSize        = sizeof(opP.TransferData);
+                opP.TransferData.Offset         = params->FetchData.RequiredFileOffset;
         opP.TransferData.Buffer         = nullptr;
         opP.TransferData.Length.QuadPart = 0;
         opP.TransferData.Flags          = CF_OPERATION_TRANSFER_DATA_FLAG_NONE;
@@ -612,9 +618,8 @@ void CALLBACK CloudFilesProvider::onFetchData(
         opInfo.Type          = CF_OPERATION_TYPE_TRANSFER_DATA;
         opInfo.ConnectionKey = info->ConnectionKey;
         opInfo.TransferKey   = info->TransferKey;
-        opP.ParamSize        = CF_SIZE_OF_OP_PARAM(TransferData);
-        opP.TransferData.Result         = E_FAIL;
-        opP.TransferData.Offset         = params->FetchData.RequiredFileOffset;
+        opP.ParamSize        = sizeof(opP.TransferData);
+                opP.TransferData.Offset         = params->FetchData.RequiredFileOffset;
         opP.TransferData.Buffer         = nullptr;
         opP.TransferData.Length.QuadPart = 0;
         opP.TransferData.Flags          = CF_OPERATION_TRANSFER_DATA_FLAG_NONE;
@@ -654,13 +659,12 @@ void CALLBACK CloudFilesProvider::onFetchData(
         opInfo.ConnectionKey = info->ConnectionKey;
         opInfo.TransferKey   = info->TransferKey;
 
-        opP.ParamSize                     = CF_SIZE_OF_OP_PARAM(TransferData);
+        opP.ParamSize                     = sizeof(opP.TransferData);
         opP.TransferData.Flags            = CF_OPERATION_TRANSFER_DATA_FLAG_NONE;
         opP.TransferData.Buffer           = buffer.data();
         opP.TransferData.Offset           = offset;
         opP.TransferData.Length.QuadPart  = static_cast<LONGLONG>(bytesRead);
-        opP.TransferData.Result           = S_OK;
-
+        
         HRESULT hr = CfExecute(&opInfo, &opP);
         if (FAILED(hr)) {
             std::cerr << "[CFProvider] CfExecute TransferData failed: 0x"
@@ -755,7 +759,7 @@ void CALLBACK CloudFilesProvider::onFetchPlaceholders(
         opInfo.Type          = CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS;
         opInfo.ConnectionKey = info->ConnectionKey;
         opInfo.TransferKey   = info->TransferKey;
-        opP.ParamSize                             = CF_SIZE_OF_OP_PARAM(TransferPlaceholders);
+        opP.ParamSize                             = sizeof(opP.TransferPlaceholders);
         opP.TransferPlaceholders.Flags            = CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_NONE;
         opP.TransferPlaceholders.PlaceholderCount = 0;
         opP.TransferPlaceholders.PlaceholderArray = nullptr;
@@ -790,10 +794,10 @@ void CALLBACK CloudFilesProvider::onFetchPlaceholders(
 
         bool isDir = (item.type == "folder");
         if (isDir) {
-            ph.FsMetadata.FileAttributes  = FILE_ATTRIBUTE_DIRECTORY;
+            ph.FsMetadata.BasicInfo.FileAttributes  = FILE_ATTRIBUTE_DIRECTORY;
             ph.FsMetadata.FileSize.QuadPart = 0;
         } else {
-            ph.FsMetadata.FileAttributes  = FILE_ATTRIBUTE_NORMAL;
+            ph.FsMetadata.BasicInfo.FileAttributes  = FILE_ATTRIBUTE_NORMAL;
             try {
                 ph.FsMetadata.FileSize.QuadPart =
                     item.size.toLongLong();
@@ -805,10 +809,10 @@ void CALLBACK CloudFilesProvider::onFetchPlaceholders(
             try {
                 int64_t ts = item.lastModified.toLongLong();
                 LARGE_INTEGER li = unixToLargeIntFileTime(ts);
-                ph.FsMetadata.LastWriteTime.dwLowDateTime   = li.LowPart;
-                ph.FsMetadata.LastWriteTime.dwHighDateTime  = li.HighPart;
-                ph.FsMetadata.CreationTime    = ph.FsMetadata.LastWriteTime;
-                ph.FsMetadata.LastAccessTime  = ph.FsMetadata.LastWriteTime;
+                ph.FsMetadata.BasicInfo.LastWriteTime   = li;
+                ph.FsMetadata.BasicInfo.CreationTime    = li;
+                ph.FsMetadata.BasicInfo.LastAccessTime  = li;
+                ph.FsMetadata.BasicInfo.ChangeTime      = li;
             } catch (...) {}
         }
 
@@ -829,7 +833,7 @@ void CALLBACK CloudFilesProvider::onFetchPlaceholders(
     opInfo.ConnectionKey = info->ConnectionKey;
     opInfo.TransferKey   = info->TransferKey;
 
-    opP.ParamSize = CF_SIZE_OF_OP_PARAM(TransferPlaceholders);
+    opP.ParamSize = sizeof(opP.TransferPlaceholders);
     opP.TransferPlaceholders.Flags =
         CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_STOP_ON_ERROR;
     opP.TransferPlaceholders.PlaceholderCount =

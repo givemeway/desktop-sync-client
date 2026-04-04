@@ -1,4 +1,6 @@
 build
+build-gcc
+build-msvc
 
 .vs
 .clang

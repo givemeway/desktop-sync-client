@@ -52,7 +52,7 @@ add_executable(sync_client
     src/ActivityModel.cpp
     src/ExplorerModel.cpp
     src/CloudBackupManager.cpp
-    #src/CloudFilesProvider.cpp
+    src/CloudFilesProvider.cpp
     qml/resources.qrc
     include/ApiClient.hpp
     include/CloudSyncWorker.hpp
@@ -69,7 +69,7 @@ add_executable(sync_client
     include/ActivityModel.hpp
     include/ExplorerModel.hpp
     include/CloudBackupManager.hpp
-    #include/CloudFilesProvider.hpp
+    include/CloudFilesProvider.hpp
   )
 
 # Find libmagic from vcpkg
@@ -127,13 +127,13 @@ message(STATUS "Qt6 found")
 # Link Libraries
 if(WIN32)
      # Define the Windows SDK path (Update the version number to match your folder!)
-     #set(WIN_SDK_INC "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0")
-     #set(WIN_SDK_LIB "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0")
-    # Add headers to the project
-    #target_include_directories(sync_client PRIVATE 
-    #   "${WIN_SDK_INC}/um"
-    #    "${WIN_SDK_INC}/shared"
-    #)
+     set(WIN_SDK_INC "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0.0")
+     set(WIN_SDK_LIB "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0.0")
+      # Add headers to the project
+      target_include_directories(sync_client PRIVATE 
+      "${WIN_SDK_INC}/um"
+      "${WIN_SDK_INC}/shared"
+      )
 
     # Tell CMake where the .lib files are for MinGW to find
     #target_link_directories(sync_client PRIVATE "${WIN_SDK_LIB}/um/x64")
@@ -155,7 +155,7 @@ if(WIN32)
         Qt6::QuickControls2
         Qt6::QuickEffects
         OpenSSL::SSL OpenSSL::Crypto
-        #        cldapi
+        cldapi
         #        ${LIBMAGIC_LIBRARY}      
         )
     else()
@@ -174,7 +174,7 @@ if(WIN32)
         Qt6::QuickControls2
         Qt6::QuickEffects
         OpenSSL::SSL OpenSSL::Crypto
-        #cldapi
+        cldapi
         #${LIBMAGIC_LIBRARY}
     )
     endif()
@@ -193,7 +193,7 @@ else()
     Qt6::QuickControls2
     Qt6::QuickEffects
     OpenSSL::SSL OpenSSL::Crypto
-    #    cldapi
+    cldapi
 )
 endif()
 
@@ -228,7 +228,7 @@ if(WIN32)
 
     
     # 2. Run windeployqt for Qt dependencies
-    set(WINDEPLOYQT_EXECUTABLE "F:/Qt/6.10.2/mingw_64/bin/windeployqt.exe")
+    set(WINDEPLOYQT_EXECUTABLE "C:/Qt/6.10.3/msvc2022_64/bin/windeployqt.exe")
     #get_target_property(_qt_bin_dir Qt6::Core LOCATION)
     #get_filename_component(_qt_bin_dir "${_qt_bin_dir}" DIRECTORY)
     #find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${_qt_bin_dir}")
