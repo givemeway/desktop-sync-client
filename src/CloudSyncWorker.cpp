@@ -1,6 +1,7 @@
 #include "CloudSyncWorker.hpp"
 #include "ActivityStore.hpp"
 #include "ApiClient.hpp"
+#include "CloudFilesProvider.hpp"
 #include "DatabaseManager.hpp"
 #include "FileSystemScanner.hpp"
 #include "FilesystemWatcher.hpp"
@@ -27,12 +28,21 @@ CloudSyncWorker::CloudSyncWorker(
     ReconciliationService &reconcile, FileSystemScanner &scanner,
     SyncWorker &syncWorker, ActivityStore &activityStore,
     ThreadPool &uploadThreadPool, ThreadPool &downloadThreadPool,
-    const std::string &syncPath, const std::string &userEmail, QObject *parent)
-    : m_dbManager(dbManager), m_activityStore(activityStore),
-      m_apiClient(apiClient), m_reconcile(reconcile), m_scanner(scanner),
-      m_uploadThreadPool(uploadThreadPool),
-      m_downloadThreadPool(downloadThreadPool), m_syncWorker(syncWorker),
-      m_syncPath(syncPath), m_userEmail(userEmail), m_stopThread(false) {}
+    const std::string &syncPath, const std::string &userEmail,
+#ifdef _WIN32
+    CloudFilesProvider *cfProvider,
+#endif
+    QObject *parent)
+    : m_dbManager(dbManager), m_apiClient(apiClient), m_reconcile(reconcile),
+      m_scanner(scanner), m_syncWorker(syncWorker),
+      m_activityStore(activityStore), m_uploadThreadPool(uploadThreadPool),
+      m_downloadThreadPool(downloadThreadPool), m_syncPath(syncPath),
+      m_userEmail(userEmail),
+#ifdef _WIN32
+      m_cfProvider(cfProvider),
+#endif
+      m_stopThread(false) {
+}
 
 CloudSyncWorker::~CloudSyncWorker() { stop(); }
 
@@ -305,13 +315,68 @@ void CloudSyncWorker::processFilesToDownload(
   m_tasksPending = filesToDownload.size();
   std::cout << "[cloudsyncworker] total TASKS: " << m_tasksPending << std::endl;
   std::vector<std::future<bool>> fileDownloadTasks;
+#ifdef _WIN32
+  if (m_cfProvider) {
+    // CF API mode — create placeholders instead of downloading.
+    // The file appears in Explorer immediately with correct size/date.
+    // Actual bytes are fetched on-demand by CloudFilesProvider::onFetchData.
+    for (const auto &file : filesToDownload) {
+      auto syncItem = m_activityStore.getActivity(file.uuid);
+      if (syncItem.has_value()) {
+        syncItem->isActive = true;
+        syncItem->inQueue = false;
+        updateActivity(file.uuid, syncItem.value());
+      }
 
+      bool ok = m_cfProvider->createFilePlaceholder(file);
+
+      if (ok) {
+        // Insert into DB so the file is tracked (same as after a real download)
+        std::string absPath =
+            file.path == "/" ? m_syncPath + "/" + file.filename
+                             : m_syncPath + file.path + "/" + file.filename;
+
+        FileMetadata f = getFileMetadata(file, absPath);
+
+        std::vector<DirectoryMetadata> dirs;
+        auto paths = getPathComponents(file.path);
+        for (auto &p : paths) {
+          std::string uuid = "";
+          if (file.dirIDs && file.dirIDs->count(p))
+            uuid = file.dirIDs->at(p);
+          else if (p == file.path)
+            uuid = file.dirID;
+          if (!uuid.empty())
+            dirs.push_back(getDirectoryMetadata(p, uuid));
+        }
+
+        {
+          std::lock_guard<std::recursive_mutex> lock(
+              m_dbManager.getSyncMutex());
+          m_dbManager.insertFileWithDirectory(f, dirs);
+        }
+
+        if (syncItem.has_value()) {
+          syncItem->isActive = false;
+          syncItem->isDone = true;
+          updateActivity(file.uuid, syncItem.value());
+        }
+      } else {
+        if (syncItem.has_value()) {
+          syncItem->isActive = false;
+          syncItem->isError = true;
+          updateActivity(file.uuid, syncItem.value());
+        }
+      }
+    }
+    return; // ← skip the legacy download path below
+  }
+#endif
+#ifndef _WIN32
   for (const auto &file : filesToDownload) {
-    count++;
     // Clone the client for this task
     auto clientPtr = m_apiClient.clone();
-    auto downloadFunc = [this, count, file,
-                         client = std::move(clientPtr)]() mutable {
+    auto downloadFunc = [this, file, client = std::move(clientPtr)]() mutable {
       std::string fileAbsPath(
           file.path == "/" ? m_syncPath + "/" + file.filename
                            : m_syncPath + file.path + "/" + file.filename);
@@ -456,6 +521,7 @@ void CloudSyncWorker::processFilesToDownload(
     // auto future = m_downloadThreadPool.enqueue(std::move(downloadFunc));
     //     fileDownloadTasks.emplace_back(std::move(future));
   }
+#endif
   /*for (auto &task : fileDownloadTasks) {
     task.get();
   }

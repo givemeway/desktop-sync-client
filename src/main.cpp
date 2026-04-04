@@ -1,6 +1,7 @@
 #include "ActivityStore.hpp"
 #include "ApiClient.hpp"
 #include "CloudBackupManager.hpp"
+#include "CloudFilesProvider.hpp"
 #include "CloudSyncWorker.hpp"
 #include "DatabaseManager.hpp"
 #include "FileSystemScanner.hpp"
@@ -80,6 +81,10 @@ int main(int argc, char *argv[]) {
     sync_app::SyncWorker syncworker(dbManager, scanner, activityStore, hashPool,
                                     syncFolder);
 
+    sync_app::CloudFilesProvider cfProvider(apiClient, dbManager, syncworker,
+                                            activityStore, syncFolder,
+                                            userEmail, "QDriveSync");
+
     sync_app::CloudBackupManager cloudBackup(apiClient);
     sync_app::CloudSyncWorker cloudSync(
         dbManager, apiClient, reconciliationService, scanner, syncworker,
@@ -101,8 +106,17 @@ int main(int argc, char *argv[]) {
     // 2. Start Sync Engine in Background Thread
     std::thread engineThread([&]() {
       try {
+        std::cout << "[Main] Registering QDriveSync folder..." << std::endl;
+        cfProvider.registerSyncRoot();
+        std::cout << "[Main] Starting QDriveSync folder..." << std::endl;
+        cfProvider.start();
+        std::cout << "[Main] Stopping QDriveSync folder..." << std::endl;
+        cfProvider.stop();
+        std::cout << "[Main] DeRegistering QDriveSync folder..." << std::endl;
+        cfProvider.unregisterSyncRoot();
         std::cout << "[Main] Database initializing in background..."
                   << std::endl;
+
         if (!dbManager.open()) {
           std::cerr << "[Main] Failed to open database." << std::endl;
           return;

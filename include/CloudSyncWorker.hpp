@@ -16,6 +16,10 @@ class ReconciliationService;
 class ThreadPool;
 struct ActivityStore;
 
+#ifdef _WIN32
+class CloudFilesProvider;
+#endif
+
 class CloudSyncWorker : public QObject {
   Q_OBJECT
 public:
@@ -27,6 +31,9 @@ public:
                            ThreadPool &downloadThreadPool,
                            const std::string &syncPath,
                            const std::string &userEmail,
+#ifdef _WIN32
+                           CloudFilesProvider *cfProvider = nullptr,
+#endif
                            QObject *parent = nullptr);
   ~CloudSyncWorker();
   void start();
@@ -34,6 +41,9 @@ public:
   std::vector<std::string> getPathComponents(const std::string &path);
 
 private:
+#ifdef _WIN32
+  CloudFilesProvider *m_cfProvider = nullptr;
+#endif
   DatabaseManager &m_dbManager;
   ApiClient &m_apiClient;
   ActivityStore &m_activityStore;
