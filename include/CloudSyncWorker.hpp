@@ -31,6 +31,7 @@ public:
   ~CloudSyncWorker();
   void start();
   void stop();
+  std::vector<std::string> getPathComponents(const std::string &path);
 
 private:
   DatabaseManager &m_dbManager;
@@ -71,7 +72,6 @@ private:
                                const std::string &absPath);
   FileMetadata constructFileMetadata(const FileQueueEntry &f);
 
-  std::vector<std::string> getPathComponents(const std::string &path);
   void
   processFilesToDownload(const std::vector<CloudFileMetadata> &filesToDownload);
 

@@ -639,6 +639,12 @@ public:
     oss << std::fixed << std::setprecision(2) << size << " " << unit;
     return oss.str();
   }
+  static auto getCurrentTime() {
+    auto now = std::chrono::system_clock::now().time_since_epoch();
+    auto timestamp =
+        std::chrono::duration_cast<std::chrono::seconds>(now).count();
+    return timestamp;
+  }
 };
 
 } // namespace sync_app

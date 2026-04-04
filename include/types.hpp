@@ -302,6 +302,12 @@ struct ExplorerItem {
   bool isSelected = false;
 };
 
+struct CloudFolderBrowseMetadata {
+  bool success;
+  std::vector<ExplorerItem> items;
+  size_t total = 0;
+};
+
 inline void from_json(const nlohmann::json &j, CloudFileMetadata &f) {
   f.uuid = j.value("uuid", "");
   f.dirID = j.value("dirID", "");
@@ -323,6 +329,30 @@ inline void from_json(const nlohmann::json &j, CloudFolderMetadata &f) {
   f.folder = j.value("folder", "");
   f.path = j.value("path", "/");
   f.created_at = j.value("created_at", "");
+}
+
+inline void from_json(const nlohmann::json &j, ExplorerItem &e) {
+  e.id = QString::fromStdString(j.value("uuid", ""));
+  e.isSelected = j.value("isChecked", false);
+  e.lastModified = QString::fromStdString(j.value("modified", ""));
+  e.name = QString::fromStdString(j.value("name", ""));
+  e.type = QString::fromStdString(j.value("type", "file"));
+  e.size = QString::number(j.value("size", 0));
+  e.versions = QString::number(j.value("versions", 1));
+  std::string type = j.value("type", "file");
+  std::string path = j.value("directory", "/");
+  if (type == "file") {
+    std::string device = j.value("device", "/");
+    std::string directory = j.value("directory", "/");
+    if (device == "/")
+      path = "/";
+    else if (directory == "/") {
+      path = "/" + device;
+    } else {
+      path = "/" + device + "/" + directory;
+    }
+  }
+  e.path = QString::fromStdString(path);
 }
 
 inline void to_json(nlohmann::json &j, const DirectoryMetadata &d) {

@@ -356,10 +356,12 @@ ReconciliationResult ReconciliationService::reconcile(
       Utility::removeRedundantMovedFiles<std::vector<FileQueueEntry>>(
           updatedResults.dirsToMove, updatedResults.filesToMove);
 
+  auto movedDirs = Utility::reduceDirs(updatedResults.dirsToMove);
+
   result.filesToMove = movedFiles;
   result.filesToDeleteLocal = updatedResults.filesToDeleteLocal;
   result.filesToDownload = updatedResults.filesToDownload;
-  result.dirsToMove = updatedResults.dirsToMove;
+  result.dirsToMove = movedDirs;
   result.foldersToCreateLocal = updatedResults.foldersToCreateLocal;
   result.foldersToDeleteLocal = updatedResults.foldersToDeleteLocal;
   result.dirsToMove =
@@ -396,6 +398,17 @@ bool ReconciliationService::reconcileLocalState(
   // 1. Fetch current DB state
   auto dbFiles = m_dbManager.getAllFiles();
   auto dbDirs = m_dbManager.getAllDirectories();
+
+  auto dbQDirs = m_dbManager.getAllQueueDirectories();
+  auto dbQFiles = m_dbManager.getAllQueueFiles();
+
+  for (auto &dir : dbQDirs.value()) {
+    auto dbQFiles = m_dbManager.getFilesInDirQ(dir.path);
+    if (dbQFiles.has_value() && dbQFiles.value().size() == 0) {
+      auto parts = m_dbManager.getFolderDevice(dir.path);
+      m_dbManager.deleteDirectoryQueue(parts.device, parts.folder, dir.path);
+    }
+  }
 
   // Index DB State
   std::map<std::string, FileMetadata> dbFilesPathMap;

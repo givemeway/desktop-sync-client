@@ -18,7 +18,7 @@ void FetchDirectoryTask::run() {
   if (result.has_value()) {
     // fires from background thread — SyncController uses Qt::QueuedConnection
     // so Qt automatically posts this to the main thread's event loop
-    emit m_manager->directoryLoaded(result.value());
+    emit m_manager->directoryLoaded(result.value().items);
   } else {
     emit m_manager->directoryLoadFailed(QString::fromStdString(m_path));
   }

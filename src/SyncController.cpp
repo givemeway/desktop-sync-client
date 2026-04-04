@@ -4,6 +4,8 @@
 #include "CloudSyncWorker.hpp"
 #include "ExplorerModel.hpp"
 #include "SyncWorker.hpp"
+#include "qobject.h"
+#include "types.hpp"
 #include <QDebug>
 #include <QString>
 #include <QVariantList>
@@ -16,34 +18,34 @@ SyncController::SyncController(CloudSyncWorker *syncEngine,
                                SyncWorker *syncWorker,
                                CloudBackupManager *backupManager,
                                QObject *parent)
-    : QObject(parent), m_cloudSyncWorker(syncEngine),
-      m_syncWorker(syncWorker), m_backupManager(backupManager) {
+    : QObject(parent), m_cloudSyncWorker(syncEngine), m_syncWorker(syncWorker),
+      m_backupManager(backupManager) {
 
   m_activityModel = new ActivityModel(this);
   m_explorerModel = new ExplorerModel(this);
 
   // ── CloudSyncWorker → ActivityModel ───────────────────────────────────────
-  connect(m_cloudSyncWorker, &CloudSyncWorker::activityUpdated,
-          m_activityModel, &ActivityModel::onActivityUpdated);
+  connect(m_cloudSyncWorker, &CloudSyncWorker::activityUpdated, m_activityModel,
+          &ActivityModel::onActivityUpdated);
 
-  connect(m_cloudSyncWorker, &CloudSyncWorker::activityRemoved,
-          m_activityModel, &ActivityModel::onActivityRemoved);
+  connect(m_cloudSyncWorker, &CloudSyncWorker::activityRemoved, m_activityModel,
+          &ActivityModel::onActivityRemoved);
 
-  connect(m_cloudSyncWorker, &CloudSyncWorker::activityAdded,
-          m_activityModel, &ActivityModel::onActivityAdded);
+  connect(m_cloudSyncWorker, &CloudSyncWorker::activityAdded, m_activityModel,
+          &ActivityModel::onActivityAdded);
 
-  connect(m_syncWorker, &SyncWorker::activityAdded,
-          m_activityModel, &ActivityModel::onActivityAdded);
+  connect(m_syncWorker, &SyncWorker::activityAdded, m_activityModel,
+          &ActivityModel::onActivityAdded);
 
   // ── CloudSyncWorker → SyncController sync state ───────────────────────────
-  connect(m_cloudSyncWorker, &CloudSyncWorker::syncStarted,
-          this, &SyncController::onSyncStarted);
+  connect(m_cloudSyncWorker, &CloudSyncWorker::syncStarted, this,
+          &SyncController::onSyncStarted);
 
-  connect(m_cloudSyncWorker, &CloudSyncWorker::syncStopped,
-          this, &SyncController::onSyncFinished);
+  connect(m_cloudSyncWorker, &CloudSyncWorker::syncStopped, this,
+          &SyncController::onSyncFinished);
 
-  connect(m_cloudSyncWorker, &CloudSyncWorker::errorOccurred,
-          this, &SyncController::onErrorOccurred);
+  connect(m_cloudSyncWorker, &CloudSyncWorker::errorOccurred, this,
+          &SyncController::onErrorOccurred);
 
   // ── CloudBackupManager → ExplorerModel ────────────────────────────────────
   // Qt::QueuedConnection is required here because these signals fire from a
@@ -51,53 +53,70 @@ SyncController::SyncController(CloudSyncWorker *syncEngine,
   // event to the main thread's event loop, so ExplorerModel (a Qt model)
   // is always updated on the main thread — safe for QML.
 
-  connect(m_backupManager, &CloudBackupManager::directoryLoaded,
-          this, [this](const std::vector<ExplorerItem> &items) {
-            m_explorerModel->populate(items);
-            m_isExplorerLoading = false;
-            emit isExplorerLoadingChanged();
-          }, Qt::QueuedConnection);
+  connect(
+      m_backupManager, &CloudBackupManager::directoryLoaded, this,
+      [this](const std::vector<ExplorerItem> &items) {
+        m_explorerModel->populate(items);
+        m_isExplorerLoading = false;
+        emit isExplorerLoadingChanged();
+      },
+      Qt::QueuedConnection);
 
-  connect(m_backupManager, &CloudBackupManager::directoryLoadFailed,
-          this, [this](const QString &path) {
-            qWarning() << "[SyncController] directory load failed:" << path;
-            m_isExplorerLoading = false;
-            emit isExplorerLoadingChanged();
-          }, Qt::QueuedConnection);
+  connect(
+      m_backupManager, &CloudBackupManager::directoryLoadFailed, this,
+      [this](const QString &path) {
+        qWarning() << "[SyncController] directory load failed:" << path;
+        m_isExplorerLoading = false;
+        emit isExplorerLoadingChanged();
+      },
+      Qt::QueuedConnection);
 
-  connect(m_backupManager, &CloudBackupManager::downloadComplete,
-          this, [this](const QString &id) {
-            qDebug() << "[SyncController] download complete:" << id;
-          }, Qt::QueuedConnection);
+  connect(
+      m_backupManager, &CloudBackupManager::downloadComplete, this,
+      [this](const QString &id) {
+        qDebug() << "[SyncController] download complete:" << id;
+      },
+      Qt::QueuedConnection);
 
-  connect(m_backupManager, &CloudBackupManager::downloadFailed,
-          this, [this](const QString &id) {
-            qWarning() << "[SyncController] download failed:" << id;
-          }, Qt::QueuedConnection);
+  connect(
+      m_backupManager, &CloudBackupManager::downloadFailed, this,
+      [this](const QString &id) {
+        qWarning() << "[SyncController] download failed:" << id;
+      },
+      Qt::QueuedConnection);
 
-  connect(m_backupManager, &CloudBackupManager::deleteFileComplete,
-          this, [this](const QString &id) {
-            // remove from explorer model so UI updates immediately
-            m_explorerModel->onRowRemoved(id.toStdString());
-          }, Qt::QueuedConnection);
+  connect(
+      m_backupManager, &CloudBackupManager::deleteFileComplete, this,
+      [this](const QString &id) {
+        // remove from explorer model so UI updates immediately
+        m_explorerModel->onRowRemoved(id.toStdString());
+      },
+      Qt::QueuedConnection);
 
-  connect(m_backupManager, &CloudBackupManager::deleteFileFailed,
-          this, [this](const QString &id) {
-            qWarning() << "[SyncController] delete file failed:" << id;
-          }, Qt::QueuedConnection);
+  connect(
+      m_backupManager, &CloudBackupManager::deleteFileFailed, this,
+      [this](const QString &id) {
+        qWarning() << "[SyncController] delete file failed:" << id;
+      },
+      Qt::QueuedConnection);
 
-  connect(m_backupManager, &CloudBackupManager::deleteFolderComplete,
-          this, [this](const QString &path) {
-            m_explorerModel->onRowRemoved(path.toStdString());
-          }, Qt::QueuedConnection);
+  connect(
+      m_backupManager, &CloudBackupManager::deleteFolderComplete, this,
+      [this](const QString &path) {
+        m_explorerModel->onRowRemoved(path.toStdString());
+      },
+      Qt::QueuedConnection);
 
-  connect(m_backupManager, &CloudBackupManager::deleteFolderFailed,
-          this, [this](const QString &path) {
-            qWarning() << "[SyncController] delete folder failed:" << path;
-          }, Qt::QueuedConnection);
+  connect(
+      m_backupManager, &CloudBackupManager::deleteFolderFailed, this,
+      [this](const QString &path) {
+        qWarning() << "[SyncController] delete folder failed:" << path;
+      },
+      Qt::QueuedConnection);
 }
 
-// ── Sync slots ────────────────────────────────────────────────────────────────
+// ── Sync slots
+// ────────────────────────────────────────────────────────────────
 
 void SyncController::onSyncStarted() {
   m_isSyncing = true;
@@ -114,21 +133,37 @@ void SyncController::onErrorOccurred(const QString &message) {
   emit showError(message);
 }
 
-// ── Sync invokables ───────────────────────────────────────────────────────────
+// ── Sync invokables
+// ───────────────────────────────────────────────────────────
 
 void SyncController::startSync() {}
 
 void SyncController::pauseSync() {}
 
-void SyncController::uploadFile(const QString &path) {
-  Q_UNUSED(path)
-}
+void SyncController::uploadFile(const QString &path) { Q_UNUSED(path) }
 
-// ── Explorer invokables ───────────────────────────────────────────────────────
+// ── Explorer invokables
+// ───────────────────────────────────────────────────────
 
 void SyncController::loadDirectory(const QString &path) {
   // save current path so navigateBack() can return to it
-  m_pathHistory.append(m_currentPath);
+  std::string p = path.toStdString();
+  std::vector<std::string> pathComponents{"/"};
+  if (path != "/") {
+    std::vector<std::string> additionalPathComponents =
+        m_cloudSyncWorker->getPathComponents(p);
+    pathComponents.insert(pathComponents.end(),
+                          additionalPathComponents.begin(),
+                          additionalPathComponents.end());
+  }
+
+  QStringList paths;
+
+  for (const auto &pth : pathComponents) {
+    paths.push_back(QString::fromStdString(pth));
+  }
+  m_pathHistory = paths;
+  // m_pathHistory.append(m_currentPath);
   emit pathHistoryChanged();
 
   m_currentPath = path;
@@ -174,9 +209,7 @@ void SyncController::toggleSelected(const QString &id) {
   m_explorerModel->setSelected(id, !currentlySelected);
 }
 
-void SyncController::selectAll() {
-  m_explorerModel->selectAll();
-}
+void SyncController::selectAll() { m_explorerModel->selectAll(); }
 
 QStringList SyncController::selectedIds() const {
   return m_explorerModel->selectedIds();

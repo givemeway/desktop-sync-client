@@ -154,6 +154,7 @@ Item {
             Repeater {
                 // pathHistory + currentPath gives us the full breadcrumb trail
                 model: syncController.pathHistory.concat([syncController.currentPath])
+                // model: syncController.pathHistory
                 Row {
                     spacing: 4
                     Text {
@@ -349,20 +350,17 @@ Item {
                             visible: isSelected
                             radius: 2
                         }
-
                         MouseArea {
                             anchors.fill: parent
                             hoverEnabled: true
                             onEntered: row.hovered = true
                             onExited:  row.hovered = false
                             onClicked: {
-                                // type comes from ExplorerModel's TypeRole
                                 if (type === "folder") {
                                     syncController.loadDirectory(path)
                                 }
                             }
                         }
-
                         RowLayout {
                             anchors.fill: parent
                             anchors.leftMargin: 16
@@ -441,7 +439,19 @@ Item {
                                         font.weight: Font.Medium
                                         elide: Text.ElideRight
                                         width: explorerRoot.width - 500
-                                    }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            onEntered: row.hovered = true
+                                            onExited:  row.hovered = false
+                                            cursorShape: type == "folder" ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                            onClicked: {
+                                                if (type === "folder") {
+                                                    syncController.loadDirectory(path)
+                                                }
+                                            }
+                                        }
+                                      }
                                     Text {
                                         text: type === "folder" ? "Folder" : name.split('.').pop().toUpperCase() + " file"
                                         color: Theme.textSecondary
@@ -453,7 +463,7 @@ Item {
 
                             // Size — size role comes as pre-formatted string from ExplorerModel
                             Text {
-                                text: size
+                                text: type == "file" ? size : "--"
                                 color: Theme.textSecondary
                                 font.pixelSize: 12
                                 Layout.preferredWidth: 100

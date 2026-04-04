@@ -25,7 +25,6 @@ public:
       workers.emplace_back([this] {
         for (;;) {
           std::function<void()> task;
-
           {
             std::unique_lock<std::mutex> lock(this->queue_mutex);
             this->condition.wait(

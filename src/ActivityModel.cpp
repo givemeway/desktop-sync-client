@@ -86,7 +86,6 @@ void ActivityModel::onActivityUpdated(const std::string &key,
     item.percentage = Utility::toQ(ss.str() + "%");
   }
   item.status = status;
-
   if (row == -1) {
     // New item — insert row
     beginInsertRows({}, m_items.size(), m_items.size());

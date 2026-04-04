@@ -24,13 +24,15 @@ public:
     VersionRole,
     LastModifiedRole,
     PathRole,
-    IsSelectedRole  // checkbox state
+    IsSelectedRole // checkbox state
   };
 
   explicit ExplorerModel(QObject *parent = nullptr);
 
   // ── QAbstractListModel overrides ──────────────────────────────────────────
   int rowCount(const QModelIndex &parent = {}) const override;
+  //  bool canFetchMore(const QModelIndex &parent) const override;
+  //  void fetchMore(const QModelIndex &parent) override;
   QVariant data(const QModelIndex &index, int role) const override;
   QHash<int, QByteArray> roleNames() const override;
 

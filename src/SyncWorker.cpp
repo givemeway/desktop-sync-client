@@ -48,7 +48,6 @@ struct SyncWorker::Impl {
   std::vector<std::thread> m_workerThreads;
 
   std::atomic<bool> m_running{false};
-  std::atomic<size_t> m_upSyncTasks = 0;
   std::mutex m_queueMtx;
   std::mutex m_upSyncMutex;
   std::mutex m_ignoreMtx;
@@ -98,9 +97,9 @@ std::mutex &SyncWorker::getUpSyncMutex() { return m_impl->m_upSyncMutex; };
 std::condition_variable &SyncWorker::getUpSyncCV() {
   return m_impl->m_upSyncCV;
 };
-std::atomic<size_t> &SyncWorker::getUpSyncTasks() {
-  return m_impl->m_upSyncTasks;
-};
+// std::atomic<size_t> &SyncWorker::getUpSyncTasks() {
+//  return m_impl->m_upSyncTasks;
+//};
 
 void SyncWorker::start() {
   if (m_impl->m_running)
@@ -414,7 +413,6 @@ void SyncWorker::handleAdded(const std::string &path) {
 
       pushFileEntry(fq);
       m_impl->m_upSyncCV.notify_all();
-      ++m_impl->m_upSyncTasks;
 
       bool isFileInserted = m_impl->m_dbManager.insertFile(f, fq);
 
@@ -458,7 +456,6 @@ void SyncWorker::handleAdded(const std::string &path) {
 
       pushDirEntry(dq);
       m_impl->m_upSyncCV.notify_all();
-      ++m_impl->m_upSyncTasks;
 
       m_impl->m_dbManager.insertDirectory(d, dq);
 
@@ -494,7 +491,6 @@ void SyncWorker::handleDeleted(const std::string &path) {
 
     pushDirEntry(dq);
     m_impl->m_upSyncCV.notify_all();
-    ++m_impl->m_upSyncTasks;
 
     m_impl->m_dbManager.deleteFolderWithTransaction(relPath, dq);
 
@@ -520,7 +516,6 @@ void SyncWorker::handleDeleted(const std::string &path) {
 
     pushFileEntry(fq);
     m_impl->m_upSyncCV.notify_all();
-    ++m_impl->m_upSyncTasks;
 
     m_impl->m_dbManager.deleteFile(existingFile->path, existingFile->filename,
                                    fq);
@@ -566,7 +561,6 @@ void SyncWorker::handleRenamed(const std::string &path,
 
         pushDirEntry(dq);
         m_impl->m_upSyncCV.notify_all();
-        ++m_impl->m_upSyncTasks;
 
         m_impl->m_dbManager.moveDirectory(relPath, oldRelPath, dq);
         std::cout << "[syncworker] Folder Renamed Successfully!" << std::endl;
@@ -668,7 +662,6 @@ void SyncWorker::handleRenamed(const std::string &path,
 
         pushFileEntry(fq);
         m_impl->m_upSyncCV.notify_all();
-        ++m_impl->m_upSyncTasks;
 
         bool isRenamed = m_impl->m_dbManager.renameFile(f, fq);
 
@@ -730,7 +723,6 @@ void SyncWorker::handleRenamed(const std::string &path,
 
       pushDirEntry(dq);
       m_impl->m_upSyncCV.notify_all();
-      ++m_impl->m_upSyncTasks;
 
       bool isFolderMoved =
           m_impl->m_dbManager.moveDirectory(relPath, oldRelPath, dq);
@@ -812,7 +804,6 @@ void SyncWorker::handleRenamed(const std::string &path,
 
         pushFileEntry(fq);
         m_impl->m_upSyncCV.notify_all();
-        ++m_impl->m_upSyncTasks;
 
         bool isFileMoved = m_impl->m_dbManager.renameFile(f, fq);
 
@@ -902,7 +893,6 @@ void SyncWorker::handleModified(const std::string &path) {
 
       pushFileEntry(fq);
       m_impl->m_upSyncCV.notify_all();
-      ++m_impl->m_upSyncTasks;
 
       m_impl->m_dbManager.insertFile(f, fq);
 

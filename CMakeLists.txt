@@ -50,6 +50,9 @@ add_executable(sync_client
     src/SyncTree.cpp
     src/SyncController.cpp
     src/ActivityModel.cpp
+    src/ExplorerModel.cpp
+    src/CloudBackupManager.cpp
+    #src/CloudFilesProvider.cpp
     qml/resources.qrc
     include/ApiClient.hpp
     include/CloudSyncWorker.hpp
@@ -64,6 +67,9 @@ add_executable(sync_client
     include/SyncController.hpp
     include/MimeTypeDetector.hpp
     include/ActivityModel.hpp
+    include/ExplorerModel.hpp
+    include/CloudBackupManager.hpp
+    #include/CloudFilesProvider.hpp
   )
 
 # Find libmagic from vcpkg
@@ -120,7 +126,18 @@ message(STATUS "Qt6 found")
 
 # Link Libraries
 if(WIN32)
-    # Required for cpp-httplib on Windows
+     # Define the Windows SDK path (Update the version number to match your folder!)
+     #set(WIN_SDK_INC "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0")
+     #set(WIN_SDK_LIB "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0")
+    # Add headers to the project
+    #target_include_directories(sync_client PRIVATE 
+    #   "${WIN_SDK_INC}/um"
+    #    "${WIN_SDK_INC}/shared"
+    #)
+
+    # Tell CMake where the .lib files are for MinGW to find
+    #target_link_directories(sync_client PRIVATE "${WIN_SDK_LIB}/um/x64")
+
     if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
       target_link_libraries(sync_client PRIVATE
         ws2_32 
@@ -138,6 +155,7 @@ if(WIN32)
         Qt6::QuickControls2
         Qt6::QuickEffects
         OpenSSL::SSL OpenSSL::Crypto
+        #        cldapi
         #        ${LIBMAGIC_LIBRARY}      
         )
     else()
@@ -156,6 +174,7 @@ if(WIN32)
         Qt6::QuickControls2
         Qt6::QuickEffects
         OpenSSL::SSL OpenSSL::Crypto
+        #cldapi
         #${LIBMAGIC_LIBRARY}
     )
     endif()
@@ -174,6 +193,7 @@ else()
     Qt6::QuickControls2
     Qt6::QuickEffects
     OpenSSL::SSL OpenSSL::Crypto
+    #    cldapi
 )
 endif()
 

@@ -1,12 +1,15 @@
 #include "ApiClient.hpp"
 #include "MimeTypeDetector.hpp"
 #include "httplib.h"
+#include "types.hpp"
 #include <curl/curl.h>
+#include <exception>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <string>
 #include <tuple>
 using json = nlohmann::json;
 
@@ -668,4 +671,63 @@ ApiClient::PathParts ApiClient::parsePath(const std::string &path) {
   return {device, directory == "" ? "/" : directory};
 }
 
+std::optional<CloudFolderBrowseMetadata>
+
+ApiClient::getDirectoryContents(const std::string &path) {
+
+  // page ==  page size
+  // start = 0 for first page, and multiple by pagesize
+  size_t page = 50;
+  size_t start = 0;
+  std::string username = m_userEmail;
+  auto parts = parsePath(path);
+  std::string query = "/app/sync/browseFolder?d=" + urlEncode(parts.device) +
+                      "&dir=" + urlEncode(parts.directory) +
+                      "&sort=" + urlEncode("asc") +
+                      "&start=" + urlEncode(std::to_string(start)) +
+                      "&page=" + urlEncode(std::to_string(page)) +
+                      "&userName=" + urlEncode(username);
+
+  auto res = m_impl->client.Get(query.c_str());
+  if (res && res->status == 200) {
+    auto data = json::parse(res->body);
+    std::cout << "[API] Browse Folder GET Request Successful. Parsing Body"
+              << std::endl;
+    CloudFolderBrowseMetadata result;
+    if (data.is_object() && data.contains("files") &&
+        data.contains("folders") && data.contains("total") &&
+        data["files"].is_array() && data["folders"].is_array()) {
+
+      try {
+        auto total_json = data["total"];
+
+        if (total_json.is_number_unsigned() || total_json.is_number_integer()) {
+          result.total = static_cast<size_t>(
+              total_json.get<nlohmann::json::number_unsigned_t>());
+        } else if (total_json.is_string()) {
+          result.total = static_cast<size_t>(std::stoull(
+              total_json.get<std::string>())); // stoull only for strings
+        }
+        result.success = true;
+        for (const auto &file : data["files"]) {
+          result.items.push_back(file.get<ExplorerItem>());
+        }
+        for (const auto &folder : data["folders"]) {
+          result.items.push_back(folder.get<ExplorerItem>());
+        }
+        return result;
+      } catch (const std::exception &e) {
+        std::cerr << "[API] Parsing Error ==> " << e.what() << std::endl;
+        result.success = false;
+        return std::nullopt;
+      }
+    }
+    std::cout << "[API] Parsing Error!" << std::endl;
+    return std::nullopt;
+  }
+  std::cout << "[API] API Error: " << std::endl;
+  return std::nullopt;
+}
+bool ApiClient::downloadFileById(const std::string &id) { return true; }
+bool ApiClient::deleteFileById(const std::string &id) { return true; }
 } // namespace sync_app

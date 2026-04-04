@@ -30,7 +30,8 @@ class SyncController : public QObject {
   Q_PROPERTY(QString storageUsed READ storageUsed NOTIFY storageUsedChanged)
 
   // ── Explorer state ────────────────────────────────────────────────────────
-  Q_PROPERTY(bool isExplorerLoading READ isExplorerLoading NOTIFY isExplorerLoadingChanged)
+  Q_PROPERTY(bool isExplorerLoading READ isExplorerLoading NOTIFY
+                 isExplorerLoadingChanged)
   Q_PROPERTY(QString currentPath READ currentPath NOTIFY currentPathChanged)
   Q_PROPERTY(QStringList pathHistory READ pathHistory NOTIFY pathHistoryChanged)
 
@@ -104,7 +105,7 @@ private:
   QString m_storageUsed = "0 MB";
   bool m_isExplorerLoading = false;
   QString m_currentPath = "/";
-  QStringList m_pathHistory;
+  QStringList m_pathHistory = {"/"};
 };
 
 } // namespace sync_app

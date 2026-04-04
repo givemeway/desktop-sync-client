@@ -48,7 +48,7 @@ public:
   bool deleteFolder(const DirectoryQueueEntry &dir);
   bool moveFolder(const DirectoryQueueEntry &dir, bool isRename = true);
 
-  std::optional<std::vector<ExplorerItem>>
+  std::optional<CloudFolderBrowseMetadata>
   getDirectoryContents(const std::string &path);
 
   bool downloadFileById(const std::string &id);

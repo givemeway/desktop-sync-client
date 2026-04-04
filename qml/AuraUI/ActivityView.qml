@@ -28,26 +28,52 @@ Item {
     }
 
     // ── File type icon helper ─────────────────────────────────────────────────
-    function fileIcon(m) {
-        switch(m) {
-            case "folder":  return "\uf07c"  // folder open
-            case ".pdf":    return "\uf1c1"  // pdf
-            case ".zip":    return "\uf1c6"  // archive
-            case ".doc":    return "\uf1c2"  // word
-            default:        return "\uf15b"  // generic file
-        }
-    }
     
-    function fileIconColor(m){
-       switch(s){
-            case "folder":  return "#181A20"  // bgDark
-            case ".pdf":    return "#EF4444"  // pdf
-            case ".zip":    return "#60A5FA"  // archive
-            case ".doc":    return "#181A20"  // word
-            default:        return "#181A20"  // generic file
-      }
-    }
-
+    function fileIcon(filename, isFolder) {
+            if (isFolder) return "\uf07c"
+            var ext = filename.split('.').pop().toLowerCase()
+            switch(ext) {
+                case "pdf":                     return "\uf1c1"
+                case "zip": case "rar":         return "\uf1c6"
+                case "doc": case "docx":        return "\uf1c2"
+                case "xls": case "xlsx":        return "\uf1c3"
+                case "ppt": case "pptx":        return "\uf1c4"
+                case "png": case "jpg":
+                case "jpeg": case "gif":        return "\uf1c5"
+                case "mp4": case "mov":
+                case "avi":                     return "\uf1c8"
+                case "mp3": case "wav":         return "\uf1c7"
+                case "js": case "ts":
+                case "py": case "cpp":
+                case "h":  case "qml":          return "\uf1c9"
+                case "html": case "htm":        return "\uf13b"
+                case "md":                      return "\uf15c"
+                case "dll":                     return "\uf013"
+                case "json":                    return "\uf1c9"
+                default:                        return "\uf15b"
+            }
+          }    
+    function fileIconColor(filename, isFolder) {
+            if (isFolder) return "#60A5FA"
+            var ext = filename.split('.').pop().toLowerCase()
+            switch(ext) {
+                case "pdf":                     return "#EF4444"
+                case "zip": case "rar":         return "#F59E0B"
+                case "doc": case "docx":        return "#3B82F6"
+                case "xls": case "xlsx":        return "#10B981"
+                case "ppt": case "pptx":        return "#F97316"
+                case "png": case "jpg":
+                case "jpeg": case "gif":        return "#8B5CF6"
+                case "mp4": case "mov":         return "#EC4899"
+                case "mp3": case "wav":         return "#06B6D4"
+                case "js": case "ts":
+                case "py": case "cpp":
+                case "h":  case "qml":          return "#84CC16"
+                case "html":                    return "#F97316"
+                case "dll":                     return "#A0AEC0"
+                default:                        return "#A0AEC0"
+            }
+        }
     function typeIcon(m){
       switch(m){
         case "upload"              : return "\uf093"
@@ -206,12 +232,12 @@ Item {
                             anchors.leftMargin: 8
                             anchors.rightMargin: 8
                             spacing: 14
-
+                            Layout.alignment: Qt.AlignVCenter
                             // Status indicator
                             Item {
                                 Layout.preferredWidth: 36
                                 Layout.preferredHeight: 36
-
+                                Layout.alignment: Qt.AlignVCenter
                                 Text {
                                     id: statusIconText
                                     anchors.centerIn: parent
@@ -232,21 +258,30 @@ Item {
                             // File icon + name
                             RowLayout {
                                 Layout.preferredWidth: 200
+                                Layout.alignment: Qt.AlignVCenter
                                 spacing: 10
 
                                 Rectangle {
                                   width: 30; height: 30; radius: 6
-                                  color: "transparent"
+                                 // color: "transparent"
+                                  color: Qt.rgba(
+                                        parseInt(activityRoot.fileIconColor(name, type === "folder").slice(1,3), 16)/255,
+                                        parseInt(activityRoot.fileIconColor(name, type === "folder").slice(3,5), 16)/255,
+                                        parseInt(activityRoot.fileIconColor(name, type === "folder").slice(5,7), 16)/255,
+                                        0.15)
+                                  //anchors.verticalCenter: parent.verticalCenter
+
                                   Text {
                                         anchors.centerIn: parent
-                                        text: activityRoot.fileIcon(meta)
+                                        text: activityRoot.fileIcon(name, meta === "folder")
                                         font.family: "Font Awesome 7 Free"
                                         font.weight: Font.Black
                                         font.pixelSize: 16
-                                        color: "white"
+                                        color: activityRoot.fileIconColor(name, meta === "folder")
+                                        // color: "white"
                                     }
                                 }
-
+                              /*
                                 Text {
                                     text: name
                                     color: Theme.textPrimary
@@ -255,7 +290,30 @@ Item {
                                     elide: Text.ElideRight
                                     Layout.preferredWidth: 170
                                 }
-                            }
+                              */
+                                Column {
+                                    //anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 2
+                                    Layout.preferredWidth: 170
+                                    Text {
+                                        text: name
+                                        color: type === "folder" ? Theme.auraCyan : Theme.textPrimary
+                                        font.pixelSize: 13
+                                        font.weight: Font.Medium
+                                        elide: Text.ElideRight
+                                      }
+                                    Text {
+                                        text: path
+                                        color: Theme.textSecondary
+                                        font.pixelSize: 10
+                                        opacity: 0.7
+                                        wrapMode: Text.NoWrap
+                                        elide: Text.ElideRight
+                                        maximumLineCount: 1
+                                        clip: true
+                                    }
+                                }
+                              }
 
                             Text {
                                   text: status == "syncing" ? meta != "folder" ? percentage : status : status
