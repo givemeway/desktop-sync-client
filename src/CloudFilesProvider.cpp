@@ -3,6 +3,10 @@
 // before pulling in types.hpp. All other project headers come after
 // so they see the clean namespace, not the polluted one.
 #include "CloudFilesProvider.hpp"
+#include <cfapi.h>
+#include <memory>
+#include <winerror.h>
+#include <winnt.h>
 
 #ifdef _WIN32
 
@@ -42,6 +46,12 @@ CloudFilesProvider::CloudFilesProvider(
 
 CloudFilesProvider::~CloudFilesProvider() { stop(); }
 
+std::unique_ptr<CloudFilesProvider> CloudFilesProvider::clone() const {
+  return std::make_unique<CloudFilesProvider>(
+      m_apiClient, m_dbManager, m_syncWorker, m_activityStore, m_syncPath,
+      m_userEmail, m_providerName);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Sync root registration
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,17 +79,25 @@ bool CloudFilesProvider::registerSyncRoot() {
 
   // PARTIAL population: we create placeholders for items we know about,
   // but we do NOT have to enumerate the entire cloud upfront.
-  policies.Population.Primary = CF_POPULATION_POLICY_PARTIAL;
+  // policies.Population.Primary = CF_POPULATION_POLICY_PARTIAL;
+  policies.Population.Primary = CF_POPULATION_POLICY_ALWAYS_FULL;
   policies.Population.Modifier = CF_POPULATION_POLICY_MODIFIER_NONE;
 
   // Track all in-sync states so overlay icons work
   policies.InSync = CF_INSYNC_POLICY_TRACK_ALL;
   policies.HardLink = CF_HARDLINK_POLICY_NONE;
+  // DEFAULT management policy — deletion behavior when offline is controlled
+  // by the placeholder pin/unpin state, not by this policy.
+  // Placeholders marked CF_PIN_STATE_UNSPECIFIED (the default) can be
+  // deleted offline. Only pinned files ("Always keep on device") are
+  // protected from offline deletion.
   policies.PlaceholderManagement = CF_PLACEHOLDER_MANAGEMENT_POLICY_DEFAULT;
 
   HRESULT hr = CfRegisterSyncRoot(
-      m_syncPathW.c_str(), &reg, &policies,
-      CF_REGISTER_FLAG_UPDATE // idempotent — safe to call on every launch
+      m_syncPathW.c_str(), &reg, &policies, CF_REGISTER_FLAG_UPDATE
+      // CF_REGISTER_FLAG_UPDATE |
+      //     CF_REGISTER_FLAG_DISABLE_ON_DEMAND_POPULATION_ON_ROOT
+      // idempotent — safe to call on every launch
   );
 
   if (FAILED(hr)) {
@@ -116,6 +134,13 @@ bool CloudFilesProvider::isSyncRootRegistered() const {
 // ─────────────────────────────────────────────────────────────────────────────
 // Runtime connection
 // ─────────────────────────────────────────────────────────────────────────────
+
+void CloudFilesProvider::run() {
+
+  m_stopThread = false;
+  std::cout << "[CFProvider] starting a new Thread..." << std::endl;
+  m_thread = std::thread(&CloudFilesProvider::start, this);
+}
 
 bool CloudFilesProvider::start() {
   if (m_connected.load())
@@ -157,15 +182,19 @@ bool CloudFilesProvider::start() {
 }
 
 void CloudFilesProvider::stop() {
-  if (!m_connected.exchange(false))
-    return;
+  m_stopThread = true;
+  if (m_thread.joinable()) {
+    if (!m_connected.exchange(false))
+      return;
 
-  HRESULT hr = CfDisconnectSyncRoot(m_connectionKey);
-  if (FAILED(hr)) {
-    std::cerr << "[CFProvider] CfDisconnectSyncRoot failed: 0x" << std::hex
-              << hr << "\n";
-  } else {
-    std::cout << "[CFProvider] Disconnected from sync root.\n";
+    HRESULT hr = CfDisconnectSyncRoot(m_connectionKey);
+    if (FAILED(hr)) {
+      std::cerr << "[CFProvider] CfDisconnectSyncRoot failed: 0x" << std::hex
+                << hr << "\n";
+    } else {
+      std::cout << "[CFProvider] Disconnected from sync root.\n";
+    }
+    m_thread.join();
   }
 }
 
@@ -296,20 +325,83 @@ bool CloudFilesProvider::createFilePlaceholder(const CloudFileMetadata &file) {
   info.FileIdentityLength = sizeof(identity);
 
   // Tell SyncWorker to ignore the Added event this will generate
+
   std::string absPath = (file.path == "/")
                             ? m_syncPath + "/" + file.filename
                             : m_syncPath + file.path + "/" + file.filename;
-  m_syncWorker.addIgnoreEvent(absPath, WatchEvent::Added);
-
+  /*
+   m_syncWorker.addIgnoreEvent(absPath, WatchEvent::Added);
+ */
   DWORD entriesProcessed = 0;
   HRESULT hr = CfCreatePlaceholders(parentDirW.c_str(), &info, 1,
                                     CF_CREATE_FLAG_NONE, &entriesProcessed);
 
   if (FAILED(hr) || entriesProcessed == 0) {
-    m_syncWorker.removeIgnoreEvent(absPath, WatchEvent::Added);
+    //    m_syncWorker.removeIgnoreEvent(absPath, WatchEvent::Added);
     std::cerr << "[CFProvider] CfCreatePlaceholders failed for "
               << file.filename << ": 0x" << std::hex << hr << "\n";
     return false;
+  }
+  // ── Post-creation: set in-sync state and fix timestamps ──────────────────
+  // Open with WRITE_DAC | FILE_WRITE_ATTRIBUTES so we can:
+  //   1. Set CF_IN_SYNC_STATE_IN_SYNC  → shows cloud checkmark overlay
+  //   2. Set FILE_BASIC_INFO timestamps → shows correct Last Modified date
+  // Use FILE_FLAG_OPEN_REPARSE_POINT so we open the placeholder itself,
+  // not trigger hydration.
+  std::wstring absPathW = toWide(absPath);
+  HANDLE hFile = CreateFileW(
+      absPathW.c_str(), WRITE_DAC | FILE_WRITE_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+      nullptr);
+
+  if (hFile != INVALID_HANDLE_VALUE) {
+    // 1. Mark in-sync → cloud overlay icon
+    CfSetInSyncState(hFile, CF_IN_SYNC_STATE_IN_SYNC, CF_SET_IN_SYNC_FLAG_NONE,
+                     nullptr);
+
+    // 2. Set pin state to UNSPECIFIED — allows offline deletion/move.
+    CfSetPinState(hFile, CF_PIN_STATE_UNSPECIFIED, CF_SET_PIN_FLAG_NONE,
+                  nullptr);
+
+    // 3. Explicitly dehydrate the placeholder.
+    //    This tells the CF kernel that this file has ZERO local bytes
+    //    and is entirely in the cloud. Without this step, Windows sees
+    //    a 0-byte file with a non-zero FileSize in the placeholder metadata
+    //    and interprets it as "partially downloaded" — triggering FETCH_DATA
+    //    on every app reconnect to "complete" the hydration.
+    //    After dehydration the file shows the cloud icon (no local copy).
+    {
+      LARGE_INTEGER startOffset = {};
+      startOffset.QuadPart = 0;
+      LARGE_INTEGER fullLength = {};
+      fullLength.QuadPart = -1; // entire file
+      // CF_DEHYDRATE_FLAG_BACKGROUND = don't show progress UI
+      CfDehydratePlaceholder(hFile, startOffset, fullLength,
+                             CF_DEHYDRATE_FLAG_BACKGROUND, nullptr);
+      // Note: dehydration of a brand-new placeholder (0 bytes on disk)
+      // is a no-op if already empty — HRESULT ignored intentionally.
+    }
+
+    // 4. Fix timestamps — CfCreatePlaceholders sometimes ignores metadata
+    if (!file.last_modified.empty()) {
+      try {
+        int64_t ts = std::stoll(file.last_modified);
+        LARGE_INTEGER li = unixToLargeIntFileTime(ts);
+        FILE_BASIC_INFO fbi = {};
+        fbi.CreationTime = li;
+        fbi.LastWriteTime = li;
+        fbi.LastAccessTime = li;
+        fbi.ChangeTime = li;
+        fbi.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+        SetFileInformationByHandle(hFile, FileBasicInfo, &fbi, sizeof(fbi));
+      } catch (...) {
+      }
+    }
+    CloseHandle(hFile);
+  } else {
+    std::cerr << "[CFProvider] Could not open placeholder for post-setup: "
+              << absPath << " err=" << GetLastError() << "\n";
   }
 
   std::cout << "[CFProvider] Placeholder created: " << file.path << "/"
@@ -322,7 +414,6 @@ bool CloudFilesProvider::createDirPlaceholder(
   std::string parentPath = fs::path(dir.path).parent_path().generic_string();
   if (parentPath.empty())
     parentPath = "/";
-
   std::wstring parentDirW =
       (parentPath == "/") ? m_syncPathW : m_syncPathW + toWide(parentPath);
 
@@ -452,6 +543,68 @@ bool CloudFilesProvider::hydrateFile(const std::wstring &absPath) {
   return true;
 }
 
+bool CloudFilesProvider::revertPlaceholder(const std::wstring &absPath,
+                                           bool isDirectory) {
+  // CfRevertPlaceholder converts a CF placeholder back to a normal file.
+  // After this the file can be deleted/moved without the sync provider running.
+  // The file must be fully hydrated (bytes local) before reverting —
+  // if it's a ghost, hydrate it first or just delete the placeholder directly.
+  DWORD flags = isDirectory
+                    ? FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
+                    : FILE_FLAG_OPEN_REPARSE_POINT;
+
+  HANDLE hFile = CreateFileW(
+      absPath.c_str(),
+      WRITE_DAC | FILE_WRITE_ATTRIBUTES | 0x00010000L, // DELETE access right
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, flags, nullptr);
+
+  if (hFile == INVALID_HANDLE_VALUE) {
+    std::cerr << "[CFProvider] revertPlaceholder: cannot open "
+              << toNarrow(absPath) << " err=" << GetLastError() << "\n";
+    return false;
+  }
+
+  HRESULT hr = CfRevertPlaceholder(hFile, CF_REVERT_FLAG_NONE, nullptr);
+  CloseHandle(hFile);
+
+  if (FAILED(hr)) {
+    // E_INVALIDARG means it was already a normal file — not an error
+    if (hr != E_INVALIDARG) {
+      std::cerr << "[CFProvider] CfRevertPlaceholder failed: 0x" << std::hex
+                << hr << "\n";
+      return false;
+    }
+  }
+  return true;
+}
+
+void CloudFilesProvider::revertAllPlaceholders() {
+  std::cout << "[CFProvider] Reverting all placeholders in: " << m_syncPath
+            << "\n";
+  try {
+    // Revert files first (depth-first), then directories
+    std::vector<std::wstring> dirs;
+    for (auto &entry : fs::recursive_directory_iterator(
+             m_syncPath, fs::directory_options::skip_permission_denied)) {
+      std::wstring pathW = toWide(entry.path().string());
+      if (entry.is_directory()) {
+        dirs.push_back(pathW);
+      } else if (entry.is_regular_file()) {
+        revertPlaceholder(pathW, false);
+      }
+    }
+    // Revert directories in reverse order (deepest first)
+    for (auto it = dirs.rbegin(); it != dirs.rend(); ++it) {
+      revertPlaceholder(*it, true);
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "[CFProvider] revertAllPlaceholders error: " << e.what()
+              << "\n";
+  }
+  std::cout << "[CFProvider] All placeholders reverted.\n";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CF Callback: FETCH_DATA
 //
@@ -477,7 +630,8 @@ void CALLBACK CloudFilesProvider::onFetchData(
   // Reconstruct the relative path from NormalizedPath
   // NormalizedPath is the absolute path to the file in the sync root.
   std::string absPath = toNarrow(info->NormalizedPath);
-  std::string relPath = absPath.substr(self->m_syncPath.size());
+  std::cout << "[CFProvider] absPath: " << absPath << std::endl;
+  std::string relPath = absPath.substr(self->m_syncPath.size() - 2);
   // Normalize separators
   std::replace(relPath.begin(), relPath.end(), '\\', '/');
 
@@ -627,7 +781,8 @@ void CALLBACK CloudFilesProvider::onFetchData(
     opP.TransferData.Buffer = buffer.data();
     opP.TransferData.Offset = offset;
     opP.TransferData.Length.QuadPart = static_cast<LONGLONG>(bytesRead);
-
+    std::cout << "[CFProvider] writing file from temp. Bytes Read => "
+              << bytesRead << std::endl;
     HRESULT hr = CfExecute(&opInfo, &opP);
     if (FAILED(hr)) {
       std::cerr << "[CFProvider] CfExecute TransferData failed: 0x" << std::hex

@@ -16,6 +16,7 @@
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -311,72 +312,22 @@ CloudSyncWorker::getDirectoryMetadata(const std::string &path,
 
 void CloudSyncWorker::processFilesToDownload(
     const std::vector<CloudFileMetadata> &filesToDownload) {
-  int count = 0;
+
   m_tasksPending = filesToDownload.size();
   std::cout << "[cloudsyncworker] total TASKS: " << m_tasksPending << std::endl;
   std::vector<std::future<bool>> fileDownloadTasks;
-#ifdef _WIN32
-  if (m_cfProvider) {
-    // CF API mode — create placeholders instead of downloading.
-    // The file appears in Explorer immediately with correct size/date.
-    // Actual bytes are fetched on-demand by CloudFilesProvider::onFetchData.
-    for (const auto &file : filesToDownload) {
-      auto syncItem = m_activityStore.getActivity(file.uuid);
-      if (syncItem.has_value()) {
-        syncItem->isActive = true;
-        syncItem->inQueue = false;
-        updateActivity(file.uuid, syncItem.value());
-      }
 
-      bool ok = m_cfProvider->createFilePlaceholder(file);
-
-      if (ok) {
-        // Insert into DB so the file is tracked (same as after a real download)
-        std::string absPath =
-            file.path == "/" ? m_syncPath + "/" + file.filename
-                             : m_syncPath + file.path + "/" + file.filename;
-
-        FileMetadata f = getFileMetadata(file, absPath);
-
-        std::vector<DirectoryMetadata> dirs;
-        auto paths = getPathComponents(file.path);
-        for (auto &p : paths) {
-          std::string uuid = "";
-          if (file.dirIDs && file.dirIDs->count(p))
-            uuid = file.dirIDs->at(p);
-          else if (p == file.path)
-            uuid = file.dirID;
-          if (!uuid.empty())
-            dirs.push_back(getDirectoryMetadata(p, uuid));
-        }
-
-        {
-          std::lock_guard<std::recursive_mutex> lock(
-              m_dbManager.getSyncMutex());
-          m_dbManager.insertFileWithDirectory(f, dirs);
-        }
-
-        if (syncItem.has_value()) {
-          syncItem->isActive = false;
-          syncItem->isDone = true;
-          updateActivity(file.uuid, syncItem.value());
-        }
-      } else {
-        if (syncItem.has_value()) {
-          syncItem->isActive = false;
-          syncItem->isError = true;
-          updateActivity(file.uuid, syncItem.value());
-        }
-      }
-    }
-    return; // ← skip the legacy download path below
-  }
-#endif
-#ifndef _WIN32
   for (const auto &file : filesToDownload) {
     // Clone the client for this task
     auto clientPtr = m_apiClient.clone();
-    auto downloadFunc = [this, file, client = std::move(clientPtr)]() mutable {
+    std::unique_ptr<CloudFilesProvider> cfProvider = nullptr;
+
+    if (m_cfProvider) {
+      std::cout << "[CFprovider] cloning .." << std::endl;
+      cfProvider = m_cfProvider->clone();
+    }
+    auto downloadFunc = [this, file, cfProvider = std::move(cfProvider),
+                         client = std::move(clientPtr)]() mutable {
       std::string fileAbsPath(
           file.path == "/" ? m_syncPath + "/" + file.filename
                            : m_syncPath + file.path + "/" + file.filename);
@@ -416,10 +367,31 @@ void CloudSyncWorker::processFilesToDownload(
         return false;
       }
 
-      // 3. Download WITHOUT the database lock using CLONED client
-      //      bool downloadStatus = client->downloadFile(file, fileAbsPath);
+      bool downloadStatus = false;
+#ifdef _WIN32
+      std::cout << "[m_cfProvider] inside the Win32 block outside the "
+                   "cfProvider block"
+                << std::endl;
+      if (cfProvider) {
+        std::cout << "[m_cfProvider] creating the file place holder"
+                  << std::endl;
+        auto it = m_activityStore.getActivity(file.uuid);
+        it->progress = 0.0;
+        it->isActive = true;
+        it->inQueue = false;
+        it->isDone = false;
+        updateActivity(file.uuid, it.value());
 
-      bool downloadStatus = client->downloadFile(
+        downloadStatus = cfProvider->createFilePlaceholder(file);
+
+        it->progress = 100.0;
+        it->isDone = true;
+        updateActivity(file.uuid, it.value());
+      }
+#endif
+#ifndef _WIN32
+      // 3. Download WITHOUT the database lock using CLONED client
+      downloadStatus = client->downloadFile(
           file, fileAbsPath, [this](const std::string &key, double progress) {
             auto it = m_activityStore.getActivity(key);
             if (it.has_value()) {
@@ -430,7 +402,7 @@ void CloudSyncWorker::processFilesToDownload(
               updateActivity(key, it.value());
             }
           });
-
+#endif
       // 4. Update Database WITH the lock
       pathParts fp = m_dbManager.getFolderDevice(fs::path(file.path));
 
@@ -521,7 +493,7 @@ void CloudSyncWorker::processFilesToDownload(
     // auto future = m_downloadThreadPool.enqueue(std::move(downloadFunc));
     //     fileDownloadTasks.emplace_back(std::move(future));
   }
-#endif
+
   /*for (auto &task : fileDownloadTasks) {
     task.get();
   }

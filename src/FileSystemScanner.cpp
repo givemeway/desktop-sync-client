@@ -148,6 +148,7 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
     std::unordered_map<std::string, InodeCacheInfo> inodesCache;
 
     for (const auto &entry : fs::recursive_directory_iterator(path, opts)) {
+      std::cout << "[scanner] processing..." << entry.path() << std::endl;
       try {
         if (entry.is_regular_file()) {
           ScannedFile file;

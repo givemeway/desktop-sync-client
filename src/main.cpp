@@ -36,7 +36,7 @@ const std::string syncFolder = "C:/Users/sandk/Desktop/sync_folder";
 const std::string syncFolder = "/users/sandeep/Desktop/sync-folder";
 #endif
 
-const std::string apiBaseUrl = "localhost:3001";
+const std::string apiBaseUrl = "http://192.168.29.34:3001";
 const std::string userEmail = "sand.kumar.gr@gmail.com";
 
 static void signalHandler(int sig) {
@@ -88,7 +88,8 @@ int main(int argc, char *argv[]) {
     sync_app::CloudBackupManager cloudBackup(apiClient);
     sync_app::CloudSyncWorker cloudSync(
         dbManager, apiClient, reconciliationService, scanner, syncworker,
-        activityStore, uploadPool, downloadPool, syncFolder, userEmail);
+        activityStore, uploadPool, downloadPool, syncFolder, userEmail,
+        &cfProvider);
 
     sync_app::SyncController::initialize(&cloudSync, &syncworker, &cloudBackup);
 
@@ -109,11 +110,12 @@ int main(int argc, char *argv[]) {
         std::cout << "[Main] Registering QDriveSync folder..." << std::endl;
         cfProvider.registerSyncRoot();
         std::cout << "[Main] Starting QDriveSync folder..." << std::endl;
-        cfProvider.start();
-        std::cout << "[Main] Stopping QDriveSync folder..." << std::endl;
-        cfProvider.stop();
-        std::cout << "[Main] DeRegistering QDriveSync folder..." << std::endl;
-        cfProvider.unregisterSyncRoot();
+        cfProvider.run();
+        // std::cout << "[Main] Stopping QDriveSync folder..." << std::endl;
+        // cfProvider.stop();
+        // std::cout << "[Main] Stopping QDriveSync folder..." << std::endl;
+        // std::cout << "[Main] DeRegistering QDriveSync folder..." <<
+        // std::endl; cfProvider.unregisterSyncRoot();
         std::cout << "[Main] Database initializing in background..."
                   << std::endl;
 
