@@ -29,9 +29,6 @@ namespace fs = std::filesystem;
 namespace sync_app {
 
 #ifdef _WIN32
-// IO_REPARSE_TAG_CLOUD_FILES — the reparse tag CF API stamps on all
-// placeholders. Value 0x9000001A — defined in ntifs.h but we define it
-// ourselves to avoid that kernel-mode header dependency.
 struct PlaceholderMeta {
   int64_t size = 0;
   int64_t mtime = 0; // Unix seconds
@@ -73,36 +70,33 @@ static PlaceholderMeta getPlaceholderMeta(const std::string &absPath) {
 #endif
 
 static bool isCloudPlaceholder(const std::string &absPath) {
-  // WIN32_FIND_DATAW is the only Win32 structure that exposes dwReserved0
-  // (the reparse tag) without opening a file handle.
-  // GetFileAttributesEx gives us attributes but NOT the reparse tag.
-  // FindFirstFileW gives us both attributes AND dwReserved0.
   std::wstring pathW(absPath.begin(), absPath.end());
   WIN32_FIND_DATAW findData = {};
   HANDLE hFind = FindFirstFileW(pathW.c_str(), &findData);
+
   if (hFind == INVALID_HANDLE_VALUE)
     return false;
   FindClose(hFind);
 
   DWORD attrs = findData.dwFileAttributes;
 
-  // Must be a reparse point to be a CF placeholder
-  if (!(attrs & FILE_ATTRIBUTE_REPARSE_POINT))
-    return false;
+  // "O" in file attrib
+  // indicator that the file is not hydrated.
+  bool isOffline = (attrs & FILE_ATTRIBUTE_OFFLINE) != 0;
 
-  // dwReserved0 holds the reparse tag for reparse point files.
-  // Confirm this is a CF API placeholder, not a symlink or other type.
-  if (findData.dwReserved0 != IO_REPARSE_TAG_CLOUD_FILES)
-    return false;
+  // (0x00400000) - cloud placeholders.
+  bool isRecall = (attrs & 0x00400000) != 0;
 
-  // It IS a CF placeholder — now check if it has local bytes.
-  // FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = no local bytes (ghost file)
-  // FILE_ATTRIBUTE_OFFLINE               = no local bytes (older flag)
-  // If neither is set the file is fully hydrated — safe to hash normally.
-  bool hasNoLocalBytes = (attrs & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0 ||
-                         (attrs & FILE_ATTRIBUTE_OFFLINE) != 0;
+  // Check if it's a Cloud Files reparse point.
+  bool isCloudTag = false;
+  if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
+    if (findData.dwReserved0 == IO_REPARSE_TAG_CLOUD_FILES) {
+      isCloudTag = true;
+    }
+  }
 
-  return hasNoLocalBytes;
+  // If ANY of these are true, the file is a placeholder
+  return (isOffline || isRecall || isCloudTag);
 }
 #else
 static bool isCloudPlaceholder(const std::string &) { return false; }

@@ -504,18 +504,20 @@ bool CloudFilesProvider::dehydrateFile(const std::wstring &absPath,
   startOffset.QuadPart = 0;
   LARGE_INTEGER length = {};
   length.QuadPart = -1; // -1 means full file
-  HRESULT hr = CfDehydratePlaceholder(hFile, startOffset, length,
-                                      CF_DEHYDRATE_FLAG_BACKGROUND, nullptr);
+  HRESULT hrHydrate = CfDehydratePlaceholder(
+      hFile, startOffset, length, CF_DEHYDRATE_FLAG_BACKGROUND, nullptr);
 
-  CloseHandle(hFile);
-
-  if (FAILED(hr)) {
+  if (FAILED(hrHydrate)) {
     std::cerr << "[CFProvider] CfDehydratePlaceholder failed: 0x" << std::hex
-              << hr << "\n";
+              << hrHydrate << "\n";
     return false;
   }
-  std::cout << "[CFProvider] CfDehydratePlaceholder SUCCESS" << hr << "\n";
 
+  CloseHandle(hFile);
+  if (hrConvert == S_OK) {
+    std::cout << "[CFProvider] CfDehydratePlaceholder SUCCESS : " << hrConvert
+              << "\n";
+  }
   return true;
 }
 
