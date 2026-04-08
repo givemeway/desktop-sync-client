@@ -3,9 +3,10 @@
 #include "ThreadPool.hpp"
 #include "types.hpp"
 #include <algorithm>
-#include <filesystem>
+
 #include <fstream>
 #include <iostream>
+
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <unordered_map>
@@ -16,6 +17,9 @@
 
 #ifdef _WIN32
 #include <windows.h>
+
+#include <cfapi.h>
+
 #else
 #include <sys/stat.h>
 #endif
@@ -23,6 +27,86 @@
 namespace fs = std::filesystem;
 
 namespace sync_app {
+
+#ifdef _WIN32
+// IO_REPARSE_TAG_CLOUD_FILES — the reparse tag CF API stamps on all
+// placeholders. Value 0x9000001A — defined in ntifs.h but we define it
+// ourselves to avoid that kernel-mode header dependency.
+struct PlaceholderMeta {
+  int64_t size = 0;
+  int64_t mtime = 0; // Unix seconds
+  bool valid = false;
+};
+
+static PlaceholderMeta getPlaceholderMeta(const std::string &absPath) {
+  PlaceholderMeta meta;
+  std::wstring pathW(absPath.begin(), absPath.end());
+
+  // Open with FILE_FLAG_OPEN_REPARSE_POINT — this opens the placeholder
+  // itself rather than triggering a recall/hydration of the file content.
+  HANDLE hFile = CreateFileW(
+      pathW.c_str(),
+      0, // minimal access — no data read
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+      nullptr);
+
+  if (hFile == INVALID_HANDLE_VALUE)
+    return meta;
+
+  WIN32_FILE_ATTRIBUTE_DATA attrData;
+  if (GetFileAttributesExW(pathW.c_str(), GetFileExInfoStandard, &attrData)) {
+    meta.size =
+        ((ULONGLONG)attrData.nFileSizeHigh << 32) | attrData.nFileSizeLow;
+    ULONGLONG mtime_ns =
+        ((ULONGLONG)attrData.ftLastWriteTime.dwHighDateTime << 32) |
+        attrData.ftLastWriteTime.dwLowDateTime;
+    constexpr int64_t EPOCH_DIFF = 116444736000000000LL;
+    meta.mtime = (mtime_ns - EPOCH_DIFF) / 10000000LL;
+  }
+
+  meta.valid = true;
+  return meta;
+}
+#ifndef IO_REPARSE_TAG_CLOUD_FILES
+#define IO_REPARSE_TAG_CLOUD_FILES 0x9000001AL
+#endif
+
+static bool isCloudPlaceholder(const std::string &absPath) {
+  // WIN32_FIND_DATAW is the only Win32 structure that exposes dwReserved0
+  // (the reparse tag) without opening a file handle.
+  // GetFileAttributesEx gives us attributes but NOT the reparse tag.
+  // FindFirstFileW gives us both attributes AND dwReserved0.
+  std::wstring pathW(absPath.begin(), absPath.end());
+  WIN32_FIND_DATAW findData = {};
+  HANDLE hFind = FindFirstFileW(pathW.c_str(), &findData);
+  if (hFind == INVALID_HANDLE_VALUE)
+    return false;
+  FindClose(hFind);
+
+  DWORD attrs = findData.dwFileAttributes;
+
+  // Must be a reparse point to be a CF placeholder
+  if (!(attrs & FILE_ATTRIBUTE_REPARSE_POINT))
+    return false;
+
+  // dwReserved0 holds the reparse tag for reparse point files.
+  // Confirm this is a CF API placeholder, not a symlink or other type.
+  if (findData.dwReserved0 != IO_REPARSE_TAG_CLOUD_FILES)
+    return false;
+
+  // It IS a CF placeholder — now check if it has local bytes.
+  // FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = no local bytes (ghost file)
+  // FILE_ATTRIBUTE_OFFLINE               = no local bytes (older flag)
+  // If neither is set the file is fully hydrated — safe to hash normally.
+  bool hasNoLocalBytes = (attrs & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0 ||
+                         (attrs & FILE_ATTRIBUTE_OFFLINE) != 0;
+
+  return hasNoLocalBytes;
+}
+#else
+static bool isCloudPlaceholder(const std::string &) { return false; }
+#endif
 
 struct FileTask {
   ScannedFile file;
@@ -65,7 +149,8 @@ std::string FileSystemScanner::getInode(const std::string &absPath) {
           .c_str(), // Basic conversion, assuming ASCII/UTF8 overlap for now
       0,            // No access rights needed for attributes
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+      NULL);
 
   if (hFile == INVALID_HANDLE_VALUE)
     return "";
@@ -148,16 +233,30 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
     std::unordered_map<std::string, InodeCacheInfo> inodesCache;
 
     for (const auto &entry : fs::recursive_directory_iterator(path, opts)) {
-      std::cout << "[scanner] processing..." << entry.path() << std::endl;
       try {
         if (entry.is_regular_file()) {
           ScannedFile file;
           file.absPath = entry.path().generic_string();
           file.path = toRelativePath(file.absPath);
           file.filename = entry.path().filename().generic_string();
+          if (isCloudPlaceholder(file.absPath)) {
+            std::cout << "[scanner] " << file.filename
+                      << " is a cloud only file" << std::endl;
+            auto meta = getPlaceholderMeta(file.absPath);
+            file.size = meta.size;
+            file.mtime = meta.mtime;
+            file.hash = "";
+            file.inode = getInode(file.absPath);
+            file.isCloudOnly = true;
+            inodesCache[file.absPath] = InodeCacheInfo({file.inode, false});
+            m_syncTree.insertPath(file.absPath, file.inode, false);
+            result.files.push_back(file);
+            continue;
+          }
           file.size = entry.file_size();
           file.mtime = getUnixTimeStamp(fs::last_write_time(file.absPath));
           file.inode = getInode(file.absPath);
+          file.isCloudOnly = false;
           inodesCache[file.absPath] = InodeCacheInfo({file.inode, false});
           std::string path = file.path == "/" ? "/" + file.filename
                                               : file.path + "/" + file.filename;

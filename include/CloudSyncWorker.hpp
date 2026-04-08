@@ -111,7 +111,9 @@ private:
 
   std::optional<bool> createFolderInCloud(DirectoryQueueEntry &dq);
 
-  std::optional<bool> uploadFile(ApiClient &client, const FileQueueEntry &fq);
+  std::optional<bool> uploadFile(ApiClient &client,
+                                 CloudFilesProvider &cfProvider,
+                                 const FileQueueEntry &fq);
 
   std::optional<bool> uploadModifiedFile(ApiClient &client,
                                          const FileQueueEntry &fq);

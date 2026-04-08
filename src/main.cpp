@@ -31,12 +31,12 @@ std::mutex cv_m;
 std::condition_variable cv;
 const std::string dbPath = "sync_client.db";
 #ifdef _WIN32
-const std::string syncFolder = "C:/Users/sandk/Desktop/sync_folder";
+const std::string syncFolder = "C:/Users/Sandeep Kumar/Desktop/sync_folder";
 #else
 const std::string syncFolder = "/users/sandeep/Desktop/sync-folder";
 #endif
 
-const std::string apiBaseUrl = "http://192.168.29.34:3001";
+const std::string apiBaseUrl = "localhost:3001";
 const std::string userEmail = "sand.kumar.gr@gmail.com";
 
 static void signalHandler(int sig) {
@@ -111,11 +111,11 @@ int main(int argc, char *argv[]) {
         cfProvider.registerSyncRoot();
         std::cout << "[Main] Starting QDriveSync folder..." << std::endl;
         cfProvider.run();
-        // std::cout << "[Main] Stopping QDriveSync folder..." << std::endl;
+        std::cout << "[Main] Stopping QDriveSync folder..." << std::endl;
         // cfProvider.stop();
-        // std::cout << "[Main] Stopping QDriveSync folder..." << std::endl;
-        // std::cout << "[Main] DeRegistering QDriveSync folder..." <<
-        // std::endl; cfProvider.unregisterSyncRoot();
+        std::cout << "[Main] Stopping QDriveSync folder..." << std::endl;
+        std::cout << "[Main] DeRegistering QDriveSync folder..." << std::endl;
+        // cfProvider.unregisterSyncRoot();
         std::cout << "[Main] Database initializing in background..."
                   << std::endl;
 
@@ -129,9 +129,9 @@ int main(int argc, char *argv[]) {
             << "[Main] Performing initial filesystem scan in background..."
             << std::endl;
         sync_app::ScanResult scanResult = scanner.scanSyncPath(syncFolder);
-
         bool isLocalDBSynced = reconciliationService.reconcileLocalState(
             scanResult.files, scanResult.directories);
+
         if (!isLocalDBSynced) {
           std::cout << "[Main] Local DB Reconciliation Failed. Sync cannot be "
                        "initialized!"

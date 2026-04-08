@@ -59,6 +59,7 @@ struct ScannedFile {
   std::string hash;
   int64_t size;
   int64_t mtime; // UTC timestamp
+  std::optional<bool> isCloudOnly = false;
 };
 
 struct InodeCacheInfo {
@@ -94,6 +95,7 @@ struct FileMetadata {
   std::string lastSyncedHashValue = "";
   std::optional<std::string> conflictId = "";
   std::string lastSynced = "";
+  std::optional<bool> isCloudOnly = false;
 };
 
 struct DirectoryMetadata {
@@ -127,6 +129,7 @@ struct FileQueueEntry {
   std::optional<std::string> old_path;
   std::optional<std::string> old_filename;
   std::optional<std::map<std::string, std::string>> dirIDs;
+  std::optional<bool> isCloudOnly = false;
 };
 
 struct DirectoryQueueEntry {

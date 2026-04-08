@@ -31,6 +31,7 @@ inline auto create_storage_impl(const std::string &path) {
                       &FileMetadata::lastSyncedHashValue),
           make_column("lastSynced", &FileMetadata::lastSynced),
           make_column("conflictId", &FileMetadata::conflictId),
+          make_column("cloudOnly", &FileMetadata::isCloudOnly),
           primary_key(&FileMetadata::path, &FileMetadata::filename),
           foreign_key(&FileMetadata::dirID)
               .references(&DirectoryMetadata::uuid)),
@@ -61,6 +62,7 @@ inline auto create_storage_impl(const std::string &path) {
           make_column("old_path", &FileQueueEntry::old_path),
           make_column("old_filename", &FileQueueEntry::old_filename),
           make_column("lastSynced", &FileQueueEntry::lastSynced),
+          make_column("cloudOnly", &FileQueueEntry::isCloudOnly),
           make_column("lastSyncedHashValue",
                       &FileQueueEntry::lastSyncedHashValue),
           primary_key(&FileQueueEntry::path, &FileQueueEntry::filename),

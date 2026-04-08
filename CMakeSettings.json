@@ -10,7 +10,7 @@
       "cmakeCommandArgs": "",
       "buildCommandArgs": "",
       "ctestCommandArgs": "",
-      "cmakeToolchain": "C:/Users/sandk/Desktop/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "cmakeToolchain": "F:/vcpkg/scripts/buildsystems/vcpkg.cmake",
       "variables": [
         {
           "name": "VCPKG_TARGET_TRIPLET",
@@ -19,8 +19,13 @@
         },
         {
           "name": "Qt6_DIR",
-          "value": "C:/Qt/6.10.3/msvc2022_64/lib/cmake/Qt6",
+          "value": "F:/Qt/6.10.2/msvc2022_64/lib/cmake/Qt6",
           "type": "PATH"
+        },
+        {
+          "name": "WINDEPLOYQT_EXECUTABLE",
+          "value": "F:/Qt/6.10.2/msvc2022_64/bin/windeployqt.exe",
+          "type": "FILEPATH"
         }
       ]
     }

@@ -4,6 +4,8 @@
 // Link: cldapi.lib
 // CF API is Windows-only — the entire class is conditionally compiled.
 
+#include "ThreadPool.hpp"
+#include <set>
 #ifdef _WIN32
 
 // ── Windows headers MUST come before cfapi.h ─────────────────────────────────
@@ -15,8 +17,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <cfapi.h>
 
+#include <cfapi.h>
 
 // ── Undefine Windows macros that clash with types.hpp enum names
 // ────────────── windows.h/winnt.h defines these as macros; they corrupt our
@@ -98,6 +100,10 @@ public:
   // Removes the sync root registration (call on uninstall).
   bool unregisterSyncRoot();
 
+  bool registerShellExtension();
+
+  bool unregisterShellExtension();
+
   // ── Runtime connection ────────────────────────────────────────────────
   // Connects CF callbacks and starts serving hydration requests.
   bool start();
@@ -131,7 +137,7 @@ public:
   // Dehydrate a file — remove local bytes, keep the placeholder ghost.
   // Call this after a file has been successfully uploaded and confirmed
   // in the cloud, if you want to free local disk space.
-  bool dehydrateFile(const std::wstring &absPath);
+  bool dehydrateFile(const std::wstring &absPath, const std::string &uuid);
 
   // Hydrate a file synchronously (blocking) — useful for conflict handling.
   bool hydrateFile(const std::wstring &absPath);
@@ -165,6 +171,9 @@ private:
                                           const CF_CALLBACK_PARAMETERS *params);
 
   static void CALLBACK onNotifyFileClosed(const CF_CALLBACK_INFO *info,
+                                          const CF_CALLBACK_PARAMETERS *params);
+
+  static void CALLBACK onNotifyFileDelete(const CF_CALLBACK_INFO *info,
                                           const CF_CALLBACK_PARAMETERS *params);
 
   // ── Internal helpers ──────────────────────────────────────────────────
@@ -202,6 +211,9 @@ private:
   std::string m_providerName;
   std::atomic<bool> m_stopThread = false;
   std::thread m_thread;
+  ThreadPool m_fetchDataPool;
+  std::mutex m_activeFetchMtx;
+  std::set<std::string> m_activeFetches;
 
   CF_CONNECTION_KEY m_connectionKey{};
   std::atomic<bool> m_connected{false};

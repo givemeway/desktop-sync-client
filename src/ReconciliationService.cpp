@@ -485,7 +485,7 @@ bool ReconciliationService::reconcileLocalState(
     auto itPath = dbFilesPathMap.find(key);
     if (itPath != dbFilesPathMap.end()) {
       const auto &dbFile = itPath->second;
-      if (dbFile.hashvalue != sFile.hash) {
+      if (dbFile.hashvalue != sFile.hash && !sFile.isCloudOnly.value()) {
         // Modified File
         std::cout << "[Reconcile] Offline MODIFY detected: " << key
                   << std::endl;

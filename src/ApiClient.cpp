@@ -276,6 +276,7 @@ bool ApiClient::downloadFile(const CloudFileMetadata &file,
                              const std::string &localAbsPath,
                              ProgressCallBack onProgress) {
   auto parts = parsePath(file.path);
+  std::cout << "[API Download File] " << localAbsPath << std::endl;
 
   std::string url =
       m_baseUrl + "/app/sync/syncDownFile?file=" + urlEncode(file.filename) +

@@ -323,7 +323,6 @@ void CloudSyncWorker::processFilesToDownload(
     std::unique_ptr<CloudFilesProvider> cfProvider = nullptr;
 
     if (m_cfProvider) {
-      std::cout << "[CFprovider] cloning .." << std::endl;
       cfProvider = m_cfProvider->clone();
     }
     auto downloadFunc = [this, file, cfProvider = std::move(cfProvider),
@@ -369,12 +368,7 @@ void CloudSyncWorker::processFilesToDownload(
 
       bool downloadStatus = false;
 #ifdef _WIN32
-      std::cout << "[m_cfProvider] inside the Win32 block outside the "
-                   "cfProvider block"
-                << std::endl;
       if (cfProvider) {
-        std::cout << "[m_cfProvider] creating the file place holder"
-                  << std::endl;
         auto it = m_activityStore.getActivity(file.uuid);
         it->progress = 0.0;
         it->isActive = true;
@@ -410,6 +404,7 @@ void CloudSyncWorker::processFilesToDownload(
 
         std::vector<DirectoryMetadata> dirs;
         FileMetadata f(getFileMetadata(file, fileAbsPath));
+        f.isCloudOnly = true;
         std::optional<DirectoryMetadata> dirExists{std::nullopt};
         {
           std::lock_guard<std::recursive_mutex> lock(
@@ -1135,6 +1130,7 @@ CloudSyncWorker::createFolderInCloud(DirectoryQueueEntry &dq) {
 }
 
 std::optional<bool> CloudSyncWorker::uploadFile(ApiClient &client,
+                                                CloudFilesProvider &cfProvider,
                                                 const FileQueueEntry &fq) {
   using DirTree = std::optional<std::vector<DirectoryMetadata>>;
   DirTree dirTree = getFileDirTree(fq);
@@ -1165,6 +1161,8 @@ std::optional<bool> CloudSyncWorker::uploadFile(ApiClient &client,
   }
   {
     std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+    std::wstring absPathW = cfProvider.toWide(fq.absPath);
+    cfProvider.dehydrateFile(absPathW, fq.uuid);
     isFileUpdated = m_dbManager.deleteFileQueue(fq.path, fq.filename);
   }
   if (!isFileUpdated) {
@@ -1363,6 +1361,7 @@ void CloudSyncWorker::processQueueToSyncUp() {
     if (fq.has_value()) {
       auto uploadFunc = [this, fq]() mutable {
         auto client = this->m_apiClient.clone();
+        auto cfProvider = this->m_cfProvider->clone();
         if (fq->sync_status == syncStatusToString(SyncStatus::DELETE)) {
           deleteFile(*client, *fq);
         }
@@ -1373,7 +1372,7 @@ void CloudSyncWorker::processQueueToSyncUp() {
           renameFile(*client, *fq);
         }
         if (fq->sync_status == syncStatusToString(SyncStatus::NEW)) {
-          uploadFile(*client, *fq);
+          uploadFile(*client, *cfProvider, *fq);
         }
         if (fq->sync_status == syncStatusToString(SyncStatus::MODIFIED)) {
           uploadModifiedFile(*client, *fq);
@@ -1443,7 +1442,6 @@ void CloudSyncWorker::runSyncUp() {
     std::cout << "[cloudsyncworker] processing LOCAL queue..."
               << " | filesPQ : " << m_syncWorker.fileIsEmpty()
               << " | dirPQ : " << m_syncWorker.dirIsEmpty() << std::endl;
-
     processQueueToSyncUp();
 
     std::unique_lock<std::mutex> lock(m_syncWorker.getUpSyncMutex());

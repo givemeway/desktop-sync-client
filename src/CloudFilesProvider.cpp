@@ -5,6 +5,7 @@
 #include "CloudFilesProvider.hpp"
 #include <cfapi.h>
 #include <memory>
+#include <minwindef.h>
 #include <winerror.h>
 #include <winnt.h>
 
@@ -14,7 +15,6 @@
 #include <fstream>
 #include <iostream>
 #include <shlobj.h>
-#include <sstream>
 #include <vector>
 
 #include "ActivityStore.hpp"
@@ -67,14 +67,17 @@ bool CloudFilesProvider::registerSyncRoot() {
   reg.ProviderName = providerNameW.c_str();
   reg.ProviderVersion = providerVer.c_str();
   reg.ProviderId = m_providerGuid;
-
+  reg.StructSize = sizeof(reg);
+  std::string rootId = "QDrive";
+  reg.SyncRootIdentity = rootId.data();
+  reg.SyncRootIdentityLength = (DWORD)rootId.size();
   // CF_SYNC_POLICIES — controls hydration and population behaviour
   CF_SYNC_POLICIES policies = {};
   policies.StructSize = sizeof(policies);
 
   // FULL hydration: when the user opens a file, Windows calls FETCH_DATA
   // and waits for us to deliver all bytes before handing the handle to the app.
-  policies.Hydration.Primary = CF_HYDRATION_POLICY_FULL;
+  policies.Hydration.Primary = CF_HYDRATION_POLICY_PARTIAL;
   policies.Hydration.Modifier = CF_HYDRATION_POLICY_MODIFIER_NONE;
 
   // PARTIAL population: we create placeholders for items we know about,
@@ -159,6 +162,7 @@ bool CloudFilesProvider::start() {
       {CF_CALLBACK_TYPE_FETCH_DATA, onFetchData},
       {CF_CALLBACK_TYPE_CANCEL_FETCH_DATA, onCancelFetchData},
       {CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS, onFetchPlaceholders},
+      {CF_CALLBACK_TYPE_NOTIFY_DELETE, onNotifyFileDelete},
       {CF_CALLBACK_TYPE_NOTIFY_FILE_OPEN_COMPLETION, onNotifyFileOpened},
       {CF_CALLBACK_TYPE_NOTIFY_FILE_CLOSE_COMPLETION, onNotifyFileClosed},
       CF_CALLBACK_REGISTRATION_END};
@@ -306,7 +310,7 @@ bool CloudFilesProvider::createFilePlaceholder(const CloudFileMetadata &file) {
   // We use a local wstring to guarantee lifetime.
   std::wstring filenameW = toWide(file.filename);
   info.RelativeFileName = filenameW.c_str();
-
+  std::cout << "[CFProvider] last_modified" << file.last_modified << std::endl;
   info.FsMetadata.FileSize.QuadPart = file.size;
   if (!file.last_modified.empty()) {
     try {
@@ -329,9 +333,8 @@ bool CloudFilesProvider::createFilePlaceholder(const CloudFileMetadata &file) {
   std::string absPath = (file.path == "/")
                             ? m_syncPath + "/" + file.filename
                             : m_syncPath + file.path + "/" + file.filename;
-  /*
-   m_syncWorker.addIgnoreEvent(absPath, WatchEvent::Added);
- */
+
+  m_syncWorker.addIgnoreEvent(absPath, WatchEvent::Modified);
   DWORD entriesProcessed = 0;
   HRESULT hr = CfCreatePlaceholders(parentDirW.c_str(), &info, 1,
                                     CF_CREATE_FLAG_NONE, &entriesProcessed);
@@ -342,12 +345,7 @@ bool CloudFilesProvider::createFilePlaceholder(const CloudFileMetadata &file) {
               << file.filename << ": 0x" << std::hex << hr << "\n";
     return false;
   }
-  // ── Post-creation: set in-sync state and fix timestamps ──────────────────
-  // Open with WRITE_DAC | FILE_WRITE_ATTRIBUTES so we can:
-  //   1. Set CF_IN_SYNC_STATE_IN_SYNC  → shows cloud checkmark overlay
-  //   2. Set FILE_BASIC_INFO timestamps → shows correct Last Modified date
-  // Use FILE_FLAG_OPEN_REPARSE_POINT so we open the placeholder itself,
-  // not trigger hydration.
+
   std::wstring absPathW = toWide(absPath);
   HANDLE hFile = CreateFileW(
       absPathW.c_str(), WRITE_DAC | FILE_WRITE_ATTRIBUTES,
@@ -356,34 +354,6 @@ bool CloudFilesProvider::createFilePlaceholder(const CloudFileMetadata &file) {
       nullptr);
 
   if (hFile != INVALID_HANDLE_VALUE) {
-    // 1. Mark in-sync → cloud overlay icon
-    CfSetInSyncState(hFile, CF_IN_SYNC_STATE_IN_SYNC, CF_SET_IN_SYNC_FLAG_NONE,
-                     nullptr);
-
-    // 2. Set pin state to UNSPECIFIED — allows offline deletion/move.
-    CfSetPinState(hFile, CF_PIN_STATE_UNSPECIFIED, CF_SET_PIN_FLAG_NONE,
-                  nullptr);
-
-    // 3. Explicitly dehydrate the placeholder.
-    //    This tells the CF kernel that this file has ZERO local bytes
-    //    and is entirely in the cloud. Without this step, Windows sees
-    //    a 0-byte file with a non-zero FileSize in the placeholder metadata
-    //    and interprets it as "partially downloaded" — triggering FETCH_DATA
-    //    on every app reconnect to "complete" the hydration.
-    //    After dehydration the file shows the cloud icon (no local copy).
-    {
-      LARGE_INTEGER startOffset = {};
-      startOffset.QuadPart = 0;
-      LARGE_INTEGER fullLength = {};
-      fullLength.QuadPart = -1; // entire file
-      // CF_DEHYDRATE_FLAG_BACKGROUND = don't show progress UI
-      CfDehydratePlaceholder(hFile, startOffset, fullLength,
-                             CF_DEHYDRATE_FLAG_BACKGROUND, nullptr);
-      // Note: dehydration of a brand-new placeholder (0 bytes on disk)
-      // is a no-op if already empty — HRESULT ignored intentionally.
-    }
-
-    // 4. Fix timestamps — CfCreatePlaceholders sometimes ignores metadata
     if (!file.last_modified.empty()) {
       try {
         int64_t ts = std::stoll(file.last_modified);
@@ -393,9 +363,12 @@ bool CloudFilesProvider::createFilePlaceholder(const CloudFileMetadata &file) {
         fbi.LastWriteTime = li;
         fbi.LastAccessTime = li;
         fbi.ChangeTime = li;
-        fbi.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+        // fbi.FileAttributes = FILE_ATTRIBUTE_NORMAL;
         SetFileInformationByHandle(hFile, FileBasicInfo, &fbi, sizeof(fbi));
       } catch (...) {
+        std::cerr
+            << "[CFProvider] Unable to set the timestamps for the place holder"
+            << std::endl;
       }
     }
     CloseHandle(hFile);
@@ -497,17 +470,35 @@ bool CloudFilesProvider::markNotInSync(const std::wstring &absPath) {
   return SUCCEEDED(hr);
 }
 
-bool CloudFilesProvider::dehydrateFile(const std::wstring &absPath) {
-  HANDLE hFile =
-      CreateFileW(absPath.c_str(), WRITE_DAC,
-                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+bool CloudFilesProvider::dehydrateFile(const std::wstring &absPath,
+                                       const std::string &uuid) {
+  std::string absPathN = toNarrow(absPath);
+  m_syncWorker.addIgnoreEvent(absPathN, WatchEvent::Modified);
+  HANDLE hFile = CreateFileW(
+      absPath.c_str(), WRITE_DAC,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+      nullptr);
 
   if (hFile == INVALID_HANDLE_VALUE) {
     std::cerr << "[CFProvider] dehydrateFile: cannot open file\n";
     return false;
   }
+  // convert to Place holder
+  PlaceholderIdentity identity = {};
+  strncpy_s(identity.uuid, uuid.c_str(), sizeof(identity.uuid) - 1);
 
+  HRESULT hrConvert =
+      CfConvertToPlaceholder(hFile, &identity, sizeof(identity),
+                             CF_CONVERT_FLAG_MARK_IN_SYNC, nullptr, nullptr
+
+      );
+
+  if (FAILED(hrConvert)) {
+    std::wcerr << "[CFProvider] conversion to place holder failed" << absPath
+               << std::endl;
+    return false;
+  }
   // Dehydrate the entire file: offset 0, length -1 means "full file"
   LARGE_INTEGER startOffset = {};
   startOffset.QuadPart = 0;
@@ -523,6 +514,8 @@ bool CloudFilesProvider::dehydrateFile(const std::wstring &absPath) {
               << hr << "\n";
     return false;
   }
+  std::cout << "[CFProvider] CfDehydratePlaceholder SUCCESS" << hr << "\n";
+
   return true;
 }
 
@@ -620,18 +613,23 @@ void CloudFilesProvider::revertAllPlaceholders() {
 
 void CALLBACK CloudFilesProvider::onFetchData(
     const CF_CALLBACK_INFO *info, const CF_CALLBACK_PARAMETERS *params) {
+  if (!info || !info->CallbackContext || !info->FileIdentity)
+    return;
   auto *self = static_cast<CloudFilesProvider *>(info->CallbackContext);
 
   // Recover UUID from the identity blob we stored when creating the placeholder
   const auto *identity =
       static_cast<const PlaceholderIdentity *>(info->FileIdentity);
+  if (!identity || identity->uuid[0] == '\0') {
+    std::cerr << "[CFProvider] FETCH_DATA: null/empty fileIdentity"
+              << std::endl;
+  }
   std::string uuid(identity->uuid);
+  std::wstring volumeName = info->VolumeDosName;
 
-  // Reconstruct the relative path from NormalizedPath
-  // NormalizedPath is the absolute path to the file in the sync root.
-  std::string absPath = toNarrow(info->NormalizedPath);
-  std::cout << "[CFProvider] absPath: " << absPath << std::endl;
-  std::string relPath = absPath.substr(self->m_syncPath.size() - 2);
+  std::wstring absPathW = volumeName + info->NormalizedPath;
+  std::string absPath = toNarrow(absPathW);
+  std::string relPath = absPath.substr(self->m_syncPath.size());
   // Normalize separators
   std::replace(relPath.begin(), relPath.end(), '\\', '/');
 
@@ -673,6 +671,15 @@ void CALLBACK CloudFilesProvider::onFetchData(
     return;
   }
 
+  {
+    std::lock_guard<std::mutex> lock(self->m_activeFetchMtx);
+    if (self->m_activeFetches.count(uuid)) {
+      std::cout << "[CFProvider] FETCH_DATA: already in progress for " << uuid
+                << " - skipping duplicate" << std::endl;
+      return;
+    }
+  }
+
   // Register SyncWorker ignore so the write we are about to do does not
   // trigger an upload event
   self->m_syncWorker.addIgnoreEvent(absPath, WatchEvent::Modified);
@@ -689,6 +696,12 @@ void CALLBACK CloudFilesProvider::onFetchData(
   cloudFile.origin = dbFile->origin;
   cloudFile.versions = dbFile->versions;
 
+  // copy connection/tranfer keys
+  CF_CONNECTION_KEY connKey = info->ConnectionKey;
+  CF_TRANSFER_KEY transferKey = info->TransferKey;
+
+  auto reqOffset = params->FetchData.RequiredFileOffset;
+  LARGE_INTEGER reqLength = params->FetchData.RequiredLength;
   // Add activity entry so the UI shows a download spinner
   auto activity = self->m_activityStore.getActivity(uuid);
   if (!activity.has_value()) {
@@ -703,114 +716,165 @@ void CALLBACK CloudFilesProvider::onFetchData(
     self->m_activityStore.addActivity(uuid, item);
   }
 
-  // Download the full file to a temp path, then transfer bytes to CF kernel.
-  // We download to a temp file rather than directly to absPath because CF API
-  // requires us to feed bytes via CfExecute, not write directly to the file.
   std::string tempPath = absPath + ".cftmp";
-  self->m_syncWorker.addIgnoreEvent(tempPath, WatchEvent::Added);
 
-  bool downloaded = self->m_apiClient.downloadFile(
-      cloudFile, tempPath,
-      [self, uuid](const std::string &key, double progress) {
-        auto it = self->m_activityStore.getActivity(uuid);
-        if (it.has_value()) {
-          it->progress = progress;
-          it->isActive = true;
-          it->isDone = progress >= 100.0;
-          self->m_activityStore.updateActivity(uuid, it.value());
-        }
-      });
+  self->m_fetchDataPool.enqueue([self, cloudFile, absPath, absPathW, tempPath,
+                                 filename, connKey, transferKey, reqOffset,
+                                 reqLength, uuid]() mutable {
+    auto client = self->m_apiClient.clone();
 
-  if (!downloaded) {
-    std::cerr << "[CFProvider] FETCH_DATA: download failed for " << filename
-              << "\n";
-    self->m_syncWorker.removeIgnoreEvent(absPath, WatchEvent::Modified);
-    self->m_syncWorker.removeIgnoreEvent(tempPath, WatchEvent::Added);
+    auto completeCF = [&](bool ok) {
+      CF_OPERATION_INFO opInfo = {sizeof(opInfo),
+                                  CF_OPERATION_TYPE_TRANSFER_DATA};
+      opInfo.ConnectionKey = connKey;
+      opInfo.TransferKey = transferKey;
+
+      CF_OPERATION_PARAMETERS opP = {0};
+      opP.ParamSize = sizeof(CF_OPERATION_PARAMETERS);
+
+      if (ok) {
+        opP.TransferData.CompletionStatus = 0; // STATUS_SUCCESS
+      } else {
+        // Use STATUS_UNSUCCESSFUL (0xC0000001) or a cloud-specific error.
+        opP.TransferData.CompletionStatus = 0xC0000001;
+        // Length and Offset are 0 for the failure signal
+        opP.TransferData.Offset.QuadPart = 0;
+        opP.TransferData.Length.QuadPart = 0;
+        opP.TransferData.Buffer = nullptr;
+      }
+
+      HRESULT hr = CfExecute(&opInfo, &opP);
+      if (FAILED(hr)) {
+        std::cerr << "[CFProvider] Final CfExecute failed: 0x" << std::hex << hr
+                  << "\n";
+      }
+
+      // Always clean up your tracking state
+      std::lock_guard<std::mutex> lock(self->m_activeFetchMtx);
+      self->m_activeFetches.erase(uuid);
+    };
+
+    self->m_syncWorker.addIgnoreEvent(tempPath, WatchEvent::Added);
+
+    bool downloaded = client->downloadFile(
+        cloudFile, tempPath,
+        [self, uuid](const std::string &key, double progress) {
+          auto it = self->m_activityStore.getActivity(uuid);
+          if (it.has_value()) {
+            it->progress = progress;
+            it->isActive = true;
+            it->isDone = progress >= 100.0;
+            self->m_activityStore.updateActivity(uuid, it.value());
+          }
+        });
+
+    if (!downloaded) {
+      std::cerr << "[CFProvider] FETCH_DATA: download failed for " << filename
+                << "\n";
+      self->m_syncWorker.removeIgnoreEvent(absPath, WatchEvent::Modified);
+      self->m_syncWorker.removeIgnoreEvent(tempPath, WatchEvent::Added);
+      fs::remove(tempPath);
+
+      auto it = self->m_activityStore.getActivity(uuid);
+      if (it.has_value()) {
+        it->isActive = false;
+        it->isError = true;
+        self->m_activityStore.updateActivity(uuid, it.value());
+      }
+      completeCF(false);
+      return;
+    }
+
+    std::ifstream ifs(tempPath, std::ios::binary);
+    if (!ifs) {
+      std::cerr << "[CFProvider] Failed to open temp file: " << tempPath
+                << "\n";
+      // Notify the platform that we failed to fetch data
+      completeCF(false);
+      return;
+    }
+
+    // 2. Determine File Size
+    ifs.seekg(0, std::ios::end);
+    LONGLONG fileSize = static_cast<LONGLONG>(ifs.tellg());
+    ifs.seekg(0, std::ios::beg);
+
+    // 3. Setup Chunking (1MB is efficient and 4KB aligned)
+    constexpr LONGLONG PAGE_SIZE = 4096;
+    constexpr LONGLONG CHUNK_SIZE = 256 * PAGE_SIZE; // 1 MB
+    std::vector<char> buffer(CHUNK_SIZE);
+
+    // Start at the offset the OS requested
+    LARGE_INTEGER currentOffset = reqOffset;
+    LONGLONG remainingToTransfer = reqLength.QuadPart;
+
+    if (currentOffset.QuadPart + remainingToTransfer > fileSize) {
+      remainingToTransfer = fileSize - currentOffset.QuadPart;
+    }
+
+    ifs.seekg(currentOffset.QuadPart, std::ios::beg);
+
+    bool transferOk = true;
+    while (remainingToTransfer > 0) {
+      // Calculate how much to read for this chunk
+      LONGLONG toRead =
+          (remainingToTransfer > CHUNK_SIZE) ? CHUNK_SIZE : remainingToTransfer;
+
+      ifs.read(buffer.data(), toRead);
+      LONGLONG bytesRead = static_cast<LONGLONG>(ifs.gcount());
+
+      if (bytesRead <= 0)
+        break;
+
+      // 4. Execute the Transfer
+      CF_OPERATION_INFO opInfo = {0};
+      opInfo.StructSize = sizeof(opInfo);
+      opInfo.Type = CF_OPERATION_TYPE_TRANSFER_DATA;
+      opInfo.ConnectionKey = connKey;
+      opInfo.TransferKey = transferKey;
+
+      CF_OPERATION_PARAMETERS opP = {0};
+      opP.ParamSize = sizeof(CF_OPERATION_PARAMETERS);
+      opP.TransferData.Flags = CF_OPERATION_TRANSFER_DATA_FLAG_NONE;
+      opP.TransferData.CompletionStatus = 0;
+      opP.TransferData.Buffer = buffer.data();
+      opP.TransferData.Offset = currentOffset;
+      opP.TransferData.Length.QuadPart = bytesRead;
+
+      HRESULT hr = CfExecute(&opInfo, &opP);
+
+      if (FAILED(hr)) {
+        std::cerr << "[CFProvider] CfExecute failed at offset "
+                  << currentOffset.QuadPart << " with error: 0x" << std::hex
+                  << hr << std::dec << "\n";
+        transferOk = false;
+        break;
+      }
+
+      currentOffset.QuadPart += bytesRead;
+      remainingToTransfer -= bytesRead;
+    }
+
+    ifs.close();
+
+    // Clean up temp file — ignore the delete event it generates
+    self->m_syncWorker.addIgnoreEvent(tempPath, WatchEvent::Deleted);
     fs::remove(tempPath);
 
-    // Report error to CF
-    CF_OPERATION_INFO opInfo = {};
-    CF_OPERATION_PARAMETERS opP = {};
-    opInfo.StructSize = sizeof(opInfo);
-    opInfo.Type = CF_OPERATION_TYPE_TRANSFER_DATA;
-    opInfo.ConnectionKey = info->ConnectionKey;
-    opInfo.TransferKey = info->TransferKey;
-    opP.ParamSize = sizeof(opP.TransferData);
-    opP.TransferData.Offset = params->FetchData.RequiredFileOffset;
-    opP.TransferData.Buffer = nullptr;
-    opP.TransferData.Length.QuadPart = 0;
-    opP.TransferData.Flags = CF_OPERATION_TRANSFER_DATA_FLAG_NONE;
-    CfExecute(&opInfo, &opP);
+    if (transferOk) {
+      // Mark the file as in-sync so Explorer shows the green checkmark
+      self->markInSync(absPathW);
+      std::cout << "[CFProvider] FETCH_DATA complete: " << filename << "\n";
 
-    auto it = self->m_activityStore.getActivity(uuid);
-    if (it.has_value()) {
-      it->isActive = false;
-      it->isError = true;
-      self->m_activityStore.updateActivity(uuid, it.value());
+      auto it = self->m_activityStore.getActivity(uuid);
+      if (it.has_value()) {
+        it->isActive = false;
+        it->isDone = true;
+        it->progress = 100.0;
+        self->m_activityStore.updateActivity(uuid, it.value());
+      }
     }
-    return;
-  }
-
-  // Read the downloaded temp file and feed it to CF in chunks
-  std::ifstream ifs(tempPath, std::ios::binary);
-  if (!ifs) {
-    std::cerr << "[CFProvider] FETCH_DATA: cannot open temp file\n";
-    self->m_syncWorker.removeIgnoreEvent(absPath, WatchEvent::Modified);
-    fs::remove(tempPath);
-    return;
-  }
-
-  constexpr size_t CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB chunks
-  std::vector<char> buffer(CHUNK_SIZE);
-  LARGE_INTEGER offset;
-  offset.QuadPart = 0;
-
-  bool transferOk = true;
-  while (ifs.read(buffer.data(), CHUNK_SIZE) || ifs.gcount() > 0) {
-    std::streamsize bytesRead = ifs.gcount();
-
-    CF_OPERATION_INFO opInfo = {};
-    CF_OPERATION_PARAMETERS opP = {};
-    opInfo.StructSize = sizeof(opInfo);
-    opInfo.Type = CF_OPERATION_TYPE_TRANSFER_DATA;
-    opInfo.ConnectionKey = info->ConnectionKey;
-    opInfo.TransferKey = info->TransferKey;
-
-    opP.ParamSize = sizeof(opP.TransferData);
-    opP.TransferData.Flags = CF_OPERATION_TRANSFER_DATA_FLAG_NONE;
-    opP.TransferData.Buffer = buffer.data();
-    opP.TransferData.Offset = offset;
-    opP.TransferData.Length.QuadPart = static_cast<LONGLONG>(bytesRead);
-    std::cout << "[CFProvider] writing file from temp. Bytes Read => "
-              << bytesRead << std::endl;
-    HRESULT hr = CfExecute(&opInfo, &opP);
-    if (FAILED(hr)) {
-      std::cerr << "[CFProvider] CfExecute TransferData failed: 0x" << std::hex
-                << hr << "\n";
-      transferOk = false;
-      break;
-    }
-    offset.QuadPart += bytesRead;
-  }
-  ifs.close();
-
-  // Clean up temp file — ignore the delete event it generates
-  self->m_syncWorker.addIgnoreEvent(tempPath, WatchEvent::Deleted);
-  fs::remove(tempPath);
-
-  if (transferOk) {
-    // Mark the file as in-sync so Explorer shows the green checkmark
-    self->markInSync(info->NormalizedPath);
-    std::cout << "[CFProvider] FETCH_DATA complete: " << filename << "\n";
-
-    auto it = self->m_activityStore.getActivity(uuid);
-    if (it.has_value()) {
-      it->isActive = false;
-      it->isDone = true;
-      it->progress = 100.0;
-      self->m_activityStore.updateActivity(uuid, it.value());
-    }
-  }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -987,6 +1051,30 @@ void CALLBACK CloudFilesProvider::onNotifyFileClosed(
   // and enqueue it through SyncWorker::handleModified — so we just log here.
   std::cout << "[CFProvider] File closed: " << toNarrow(info->NormalizedPath)
             << "\n";
+}
+
+void CALLBACK CloudFilesProvider::onNotifyFileDelete(
+    const CF_CALLBACK_INFO *info, const CF_CALLBACK_PARAMETERS *params) {
+  CF_OPERATION_INFO opInfo = {};
+  opInfo.StructSize = sizeof(opInfo);
+  opInfo.Type = CF_OPERATION_TYPE_ACK_DELETE;
+  opInfo.ConnectionKey = info->ConnectionKey;
+  opInfo.TransferKey = info->TransferKey;
+
+  CF_OPERATION_PARAMETERS opParams = {};
+  opParams.ParamSize = sizeof(opParams.AckDelete);
+
+  // Use S_OK for success (equivalent to STATUS_SUCCESS)
+  opParams.AckDelete.CompletionStatus = S_OK;
+
+  // Correct flag name:
+  opParams.AckDelete.Flags = CF_OPERATION_ACK_DELETE_FLAG_NONE;
+
+  HRESULT hr = CfExecute(&opInfo, &opParams);
+  if (FAILED(hr)) {
+    std::cerr << "[CFProvider] CfExecute AckDelete failed: 0x" << std::hex << hr
+              << std::endl;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
