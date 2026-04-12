@@ -17,7 +17,13 @@
 
 namespace fs = std::filesystem;
 namespace sync_app {
+int customFilter = FILE_NOTIFY_CHANGE_CREATION | FILE_NOTIFY_CHANGE_LAST_WRITE |
+                   FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+                   FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_ATTRIBUTES;
 
+efsw::WatcherOption watcherOption(efsw::Options::WinNotifyFilter, customFilter);
+
+using Opt = efsw::WatcherOption;
 enum class SettleState { Polling, Settling };
 
 struct PendingEvent {
@@ -300,6 +306,8 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
             if (isDir && ev.type == WatchEvent::Modified) {
               it = pendingEventsQ.erase(it);
               pendingEvents.erase(path);
+              if (callback)
+                callback(path, "", WatchEvent::Modified);
               continue;
             }
             auto delIt = deletedItems.find(inode);
@@ -494,7 +502,8 @@ void FilesystemWatcher::start() {
   m_impl->workerThread = std::thread(&Impl::workerLoop, m_impl.get());
 
   try {
-    m_impl->watchId = m_impl->watcher.addWatch(m_path, m_impl.get(), true);
+    m_impl->watchId = m_impl->watcher.addWatch(m_path, m_impl.get(), true,
+                                               std::vector<Opt>{watcherOption});
     if (m_impl->watchId < 0) {
       std::cerr << "[Watcher] Error starting watcher: "
                 << efsw::Errors::Log::getLastErrorLog() << std::endl;

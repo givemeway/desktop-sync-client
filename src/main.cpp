@@ -31,7 +31,7 @@ std::mutex cv_m;
 std::condition_variable cv;
 const std::string dbPath = "sync_client.db";
 #ifdef _WIN32
-const std::string syncFolder = "C:/Users/Sandeep Kumar/Desktop/sync_folder";
+const std::string syncFolder = "C:/Users/Sandeep Kumar/Desktop/My QDrive";
 #else
 const std::string syncFolder = "/users/sandeep/Desktop/sync-folder";
 #endif
@@ -83,7 +83,7 @@ int main(int argc, char *argv[]) {
 
     sync_app::CloudFilesProvider cfProvider(apiClient, dbManager, syncworker,
                                             activityStore, syncFolder,
-                                            userEmail, "QDriveSync");
+                                            userEmail, "QDrive");
 
     sync_app::CloudBackupManager cloudBackup(apiClient);
     sync_app::CloudSyncWorker cloudSync(
@@ -111,10 +111,10 @@ int main(int argc, char *argv[]) {
         cfProvider.registerSyncRoot();
         std::cout << "[Main] Starting QDriveSync folder..." << std::endl;
         cfProvider.run();
-        std::cout << "[Main] Stopping QDriveSync folder..." << std::endl;
         // cfProvider.stop();
-        std::cout << "[Main] Stopping QDriveSync folder..." << std::endl;
-        std::cout << "[Main] DeRegistering QDriveSync folder..." << std::endl;
+        // std::cout << "[Main] Stopping QDriveSync folder..." << std::endl;
+        // std::cout << "[Main] DeRegistering QDriveSync folder..." <<
+        // std::endl;
         // cfProvider.unregisterSyncRoot();
         std::cout << "[Main] Database initializing in background..."
                   << std::endl;

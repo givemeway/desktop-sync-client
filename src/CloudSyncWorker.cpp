@@ -335,7 +335,6 @@ void CloudSyncWorker::processFilesToDownload(
 
       // 1. Tell SyncWorker to ignore the event we are about to trigger
       m_syncWorker.addIgnoreEvent(fileAbsPath, WatchEvent::Added);
-
       // 2. Ensure parent directory exists
       std::vector<std::string> paths = getPathComponents(file.path);
       try {
@@ -365,7 +364,6 @@ void CloudSyncWorker::processFilesToDownload(
         }
         return false;
       }
-
       bool downloadStatus = false;
 #ifdef _WIN32
       if (cfProvider) {
@@ -376,7 +374,7 @@ void CloudSyncWorker::processFilesToDownload(
         it->isDone = false;
         updateActivity(file.uuid, it.value());
 
-        downloadStatus = cfProvider->createFilePlaceholder(file);
+        downloadStatus = cfProvider->createFilePlaceholder(file, paths);
 
         it->progress = 100.0;
         it->isDone = true;
@@ -533,6 +531,14 @@ void CloudSyncWorker::processFoldersToCreate(
     updateActivity(folder.uuid, syncItem.value());
 
     auto paths = getPathComponents(folder.path);
+    /*
+    if (m_cfProvider) {
+      std::string absPath;
+      absPath = folder.path == "/" ? m_syncPath : m_syncPath + folder.path;
+      m_cfProvider->createDirsPlaceholder(absPath, folder.dirIDs.value(),
+                                          paths);
+    }
+    */
     try {
       if (!fs::exists(folder.absPath)) {
         std::cout << "[cloudsyncworker] creating path ..." << folder.absPath
@@ -540,7 +546,6 @@ void CloudSyncWorker::processFoldersToCreate(
         for (auto &p : paths) {
           auto fp = p == "/" ? m_syncPath : m_syncPath + p;
           if (!fs::exists(fp)) {
-            // 1. Register ignore intent
             m_syncWorker.addIgnoreEvent(fp, WatchEvent::Added);
           }
         }

@@ -9,6 +9,7 @@ namespace sync_app {
 /**
  * FilesystemEvent represents a change in the filesystem.
  */
+
 enum class WatchEvent { Added, Modified, Deleted, Moved, Renamed };
 class SyncTree;
 /**

@@ -100,7 +100,7 @@ public:
   // Removes the sync root registration (call on uninstall).
   bool unregisterSyncRoot();
 
-  bool registerShellExtension();
+  bool registerShellIcons();
 
   bool unregisterShellExtension();
 
@@ -121,18 +121,24 @@ public:
   // Create a ghost file placeholder from cloud metadata.
   // Call this instead of downloading in processFilesToDownload().
   // The file will appear in Explorer with size/dates but no local bytes.
-  bool createFilePlaceholder(const CloudFileMetadata &file);
+  bool createFilePlaceholder(const CloudFileMetadata &file,
+                             const std::vector<std::string> &paths);
 
   // Create a ghost directory placeholder.
   // Call this instead of fs::create_directories() in processFoldersToCreate().
   bool createDirPlaceholder(const LocalFolderCreateMetadata &dir);
 
+  bool createDirsPlaceholder(const std::string &absPath,
+                             const std::map<std::string, std::string> &dirIDs,
+                             const std::vector<std::string> &paths);
   // Mark a file/directory as fully in-sync with the cloud.
   // This shows the green checkmark overlay icon in Explorer.
   bool markInSync(const std::wstring &absPath);
 
   // Mark a file/directory as out-of-sync (pending upload/download).
   bool markNotInSync(const std::wstring &absPath);
+
+  bool markUnspecifiedPinned(const std::wstring &absPath);
 
   // Dehydrate a file — remove local bytes, keep the placeholder ghost.
   // Call this after a file has been successfully uploaded and confirmed
@@ -176,6 +182,9 @@ private:
   static void CALLBACK onNotifyFileDelete(const CF_CALLBACK_INFO *info,
                                           const CF_CALLBACK_PARAMETERS *params);
 
+  static void CALLBACK onDehydrateFile(const CF_CALLBACK_INFO *info,
+                                       const CF_CALLBACK_PARAMETERS *params);
+
   // ── Internal helpers ──────────────────────────────────────────────────
 
   // Transfer a byte range to the CF kernel as part of FETCH_DATA.
@@ -197,7 +206,7 @@ private:
   static FILETIME unixStringToFileTime(const std::string &unixSeconds);
 
   // Convert a Unix epoch (seconds) to LARGE_INTEGER FILETIME ticks.
-  static LARGE_INTEGER unixToLargeIntFileTime(int64_t unixSeconds);
+  static LARGE_INTEGER unixToLargeIntFileTime(int64_t unixMs);
 
   // ── Members ───────────────────────────────────────────────────────────
   ApiClient &m_apiClient;

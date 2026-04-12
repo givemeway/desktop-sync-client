@@ -85,7 +85,9 @@ static bool isCloudPlaceholder(const std::string &absPath) {
   bool isOffline = (attrs & FILE_ATTRIBUTE_OFFLINE) != 0;
 
   // (0x00400000) - cloud placeholders.
-  bool isRecall = (attrs & 0x00400000) != 0;
+  // FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS 0x00400000
+  //  bool isRecall = (attrs & 0x00400000) != 0;
+  bool isRecall = (attrs & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0;
 
   // Check if it's a Cloud Files reparse point.
   bool isCloudTag = false;
@@ -234,8 +236,6 @@ ScanResult FileSystemScanner::scanSyncPath(std::string path) {
           file.path = toRelativePath(file.absPath);
           file.filename = entry.path().filename().generic_string();
           if (isCloudPlaceholder(file.absPath)) {
-            std::cout << "[scanner] " << file.filename
-                      << " is a cloud only file" << std::endl;
             auto meta = getPlaceholderMeta(file.absPath);
             file.size = meta.size;
             file.mtime = meta.mtime;

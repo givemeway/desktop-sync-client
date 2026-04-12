@@ -156,6 +156,7 @@ if(WIN32)
         Qt6::QuickEffects
         OpenSSL::SSL OpenSSL::Crypto
         cldapi
+        windowsapp        
         #        ${LIBMAGIC_LIBRARY}      
         )
     else()
@@ -175,6 +176,7 @@ if(WIN32)
         Qt6::QuickEffects
         OpenSSL::SSL OpenSSL::Crypto
         cldapi
+        windowsapp
         #${LIBMAGIC_LIBRARY}
     )
     endif()

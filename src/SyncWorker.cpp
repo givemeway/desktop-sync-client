@@ -15,6 +15,38 @@
 #include <queue>
 #include <string>
 #include <vector>
+#include <winerror.h>
+#ifdef _WIN32
+#include <windows.h>
+
+#include <cfapi.h>
+// #include <fileapi.h>
+// #include <minwindef.h>
+// #include <winnt.h>
+#endif
+
+#ifdef DELETE
+#undef DELETE
+#endif
+#ifdef ERROR
+#undef ERROR
+#endif
+#ifdef UNKNOWN
+#undef UNKNOWN
+#endif
+#ifdef DUPLICATE
+#undef DUPLICATE
+#endif
+#ifdef IN
+#undef IN
+#endif
+#ifdef OUT
+#undef OUT
+#endif
+#ifdef VOID
+#undef VOID
+#endif
+
 namespace fs = std::filesystem;
 
 namespace sync_app {
@@ -76,6 +108,80 @@ struct SyncWorker::Impl {
     if (*fileEntry.priority <= 6 || *dirEntry.priority <= 5)
       return true;
     return false;
+  }
+
+  bool deHydrateFile(const std::string &absPath) {
+    HANDLE hFile = CreateFileA(
+        absPath.c_str(), WRITE_DAC,
+        FILE_SHARE_WRITE | FILE_SHARE_DELETE | FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+      std::cerr << "[SyncWorker] dehydrateFile: cannot open file :" << absPath
+                << std::endl;
+      return false;
+    }
+    LARGE_INTEGER startOffset, length = {};
+    startOffset.QuadPart = 0;
+    length.QuadPart = -1;
+
+    HRESULT hr = CfDehydratePlaceholder(hFile, startOffset, length,
+                                        CF_DEHYDRATE_FLAG_BACKGROUND, nullptr);
+    if (FAILED(hr)) {
+      std::cerr
+          << "[SyncWorker] dehydrateFile: CfDeHydratePlaceHolder failed: 0x"
+          << std::hex << hr << std::endl;
+      return false;
+    }
+
+    hr = CfSetInSyncState(hFile, CF_IN_SYNC_STATE_IN_SYNC,
+                          CF_SET_IN_SYNC_FLAG_NONE, nullptr);
+    if (FAILED(hr)) {
+      std::cerr << "[SyncWorker] dehydrateFile: CfSetInSyncState failed: 0x"
+                << std::hex << hr << std::endl;
+      return false;
+    }
+
+    hr = CfSetPinState(hFile, CF_PIN_STATE_UNPINNED, CF_SET_PIN_FLAG_NONE,
+                       nullptr);
+    if (FAILED(hr)) {
+      std::cerr << "[SyncWorker] dehydrateFile: CfSetPinState failed: 0x"
+                << std::hex << hr << std::endl;
+      return false;
+    }
+
+    std::cout << "[Syncworker] dehydrateFile: CfDehydratePlaceholder & "
+                 "CfSetPinState & CfSetInSyncState SUCCESS "
+              << hr << std::endl;
+    CloseHandle(hFile);
+    return true;
+  }
+
+  void fetchData(const std::string &absPath) {
+    HANDLE hFile = CreateFileA(
+        absPath.c_str(), WRITE_DAC,
+        FILE_SHARE_WRITE | FILE_SHARE_DELETE | FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+      std::cerr << "[SyncWorker] fetchData: cannot open file :" << absPath
+                << std::endl;
+      return;
+    }
+    CF_PLACEHOLDER_STANDARD_INFO info = {};
+    DWORD bytesReturned;
+    HRESULT hr = CfGetPlaceholderInfo(hFile, CF_PLACEHOLDER_INFO_STANDARD,
+                                      &info, sizeof(info), &bytesReturned);
+    if (FAILED(hr)) {
+      std::cerr << "[SyncWorker] fetchData: CfDeHydratePlaceHolder failed: 0x"
+                << std::hex << hr << std::endl;
+      return;
+    }
+    std::cout << "[Syncworker] fetchData: Hydration Initiated " << hr
+              << std::endl;
+
+    CloseHandle(hFile);
+    return;
   }
 };
 
@@ -830,7 +936,36 @@ void SyncWorker::handleRenamed(const std::string &path,
 void SyncWorker::handleModified(const std::string &path) {
   if (!fs::exists(path))
     return;
+#ifdef _WIN32
+  DWORD attr = GetFileAttributesA(path.c_str());
 
+  if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_UNPINNED)
+
+  ) {
+    if (attr & FILE_ATTRIBUTE_DIRECTORY) {
+      std::cout << "[SyncWorker] DIRECTORY ATTRIBUTE CHANGED TO UNPINNED "
+                << path << std::endl;
+    } else {
+      std::cout << "[SyncWorker] FILE ATTRIBUTE CHANGED TO UNPINNED " << path
+                << std::endl;
+      m_impl->deHydrateFile(path);
+    }
+    return;
+  }
+  if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_PINNED) &&
+      (attr & FILE_ATTRIBUTE_OFFLINE)) {
+    if (attr & FILE_ATTRIBUTE_DIRECTORY) {
+      std::cout << "[SyncWorker] DIRECTORY ATTRIBUTE PINNED " << path
+                << std::endl;
+    } else {
+      std::cout << "[SyncWorker] FILE ATTRIBUTE PINNED: FETCH_DATA: " << path
+                << std::endl;
+      //      m_impl->fetchData(path);
+    }
+    return;
+  }
+
+#endif
   if (!fs::is_directory(path)) {
     // 1. Heavy Hashing (NO LOCK)
     std::ifstream fi(path, std::ios::binary);
@@ -858,6 +993,7 @@ void SyncWorker::handleModified(const std::string &path) {
 
     auto existingFile = m_impl->m_dbManager.getFileByPath(relPath, filename);
     if (existingFile.has_value()) {
+
       FileMetadata f;
       FileQueueEntry fq;
 
@@ -873,7 +1009,16 @@ void SyncWorker::handleModified(const std::string &path) {
       f.versions = existingFile->versions + 1;
       f.size = fileSize;
       f.dirID = existingFile->dirID;
-
+#ifdef _WIN32
+      if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_PINNED) &&
+          !(attr & FILE_ATTRIBUTE_OFFLINE)) {
+        if (hashStr == existingFile->hashvalue) {
+          std::cout << "[SyncWorker] FILE ATTRIBUTE PINNED: ALWAYS ON DISK : "
+                    << path << std::endl;
+          return;
+        }
+      }
+#endif
       auto now = std::chrono::system_clock::now().time_since_epoch();
       auto timestamp =
           std::chrono::duration_cast<std::chrono::seconds>(now).count();
