@@ -225,7 +225,6 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
             //            bool isDir = cacheIt->second.isDir;
             bool isDir = current->isDir;
             if (delIt == deletedItems.end()) {
-              auto deletedTime = std::chrono::steady_clock::now();
               deletedItems[inode] = {inode, path, now, isDir};
               ev.deletedTime = now;
               ev.nextCheck = now + pollInterval;
@@ -257,17 +256,29 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
                 continue;
               }
               if (!isDir && elapsed >= settleTime) {
-                std::cout << "[watcher] isDir: " << isDir
-                          << " elapsed: " << elapsed
-                          << " sending delete event ->" << path << std::endl;
-                if (callback) {
-                  callback(path, "", WatchEvent::Deleted);
+                bool isMovePending = false;
+                for (auto &qev : pendingEventsQ) {
+                  if (qev.isMoved && qev.oldPath == path) {
+                    isMovePending = true;
+                    break;
+                  }
                 }
-                //                m_inodesCache.erase(path);
-                m_syncTree.deletePath(path);
-                deletedItems.erase(inode);
-                it = pendingEventsQ.erase(it);
-                pendingEvents.erase(path);
+                if (!isMovePending) {
+                  std::cout << "[watcher] isDir: " << isDir
+                            << " elapsed: " << elapsed
+                            << " sending delete event ->" << path << std::endl;
+                  if (callback) {
+                    callback(path, "", WatchEvent::Deleted);
+                  }
+                  //                m_inodesCache.erase(path);
+                  m_syncTree.deletePath(path);
+                  deletedItems.erase(inode);
+                  it = pendingEventsQ.erase(it);
+                  pendingEvents.erase(path);
+                  continue;
+                }
+                ev.nextCheck = now + pollInterval;
+                ++it;
                 continue;
               }
               if (!isDir && elapsed <= settleTime) {
@@ -306,8 +317,9 @@ struct FilesystemWatcher::Impl : public efsw::FileWatchListener {
             if (isDir && ev.type == WatchEvent::Modified) {
               it = pendingEventsQ.erase(it);
               pendingEvents.erase(path);
-              if (callback)
+              /*if (callback)
                 callback(path, "", WatchEvent::Modified);
+              */
               continue;
             }
             auto delIt = deletedItems.find(inode);

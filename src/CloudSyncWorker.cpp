@@ -539,6 +539,7 @@ void CloudSyncWorker::processFoldersToCreate(
                                           paths);
     }
     */
+    // if (!m_cfProvider) {
     try {
       if (!fs::exists(folder.absPath)) {
         std::cout << "[cloudsyncworker] creating path ..." << folder.absPath
@@ -566,6 +567,7 @@ void CloudSyncWorker::processFoldersToCreate(
       updateActivity(folder.uuid, syncItem.value());
       continue;
     }
+    //}
 
     // 2. Database operation (locked)
     auto folderPaths = getPathComponents(folder.path);
@@ -1184,6 +1186,7 @@ std::optional<bool> CloudSyncWorker::uploadFile(ApiClient &client,
 
 std::optional<bool>
 CloudSyncWorker::uploadModifiedFile(ApiClient &client,
+                                    CloudFilesProvider &cfProvider,
                                     const FileQueueEntry &fq) {
   // update file
   bool isUploaded = client.uploadFile(
@@ -1211,6 +1214,8 @@ CloudSyncWorker::uploadModifiedFile(ApiClient &client,
 
   {
     std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+    std::wstring absPathW(fq.absPath.begin(), fq.absPath.end());
+    cfProvider.markInSync(absPathW);
     isFileUpdated = m_dbManager.deleteFileQueue(fq.path, fq.filename);
   }
 
@@ -1293,6 +1298,7 @@ CloudSyncWorker::getFileDirTree(const FileQueueEntry &fq) {
 }
 
 std::optional<bool> CloudSyncWorker::renameFile(ApiClient &client,
+                                                CloudFilesProvider &cfProvider,
                                                 const FileQueueEntry &fq) {
   auto syncItem = m_activityStore.getActivity(fq.uuid);
   syncItem->isActive = true;
@@ -1320,6 +1326,14 @@ std::optional<bool> CloudSyncWorker::renameFile(ApiClient &client,
 
   {
     std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+    std::wstring absPathNormalizedW =
+        fs::path(fq.absPath).make_preferred().wstring();
+    bool isMarkedInSync = cfProvider.markInSync(absPathNormalizedW);
+    m_syncWorker.addIgnoreEvent(fq.absPath, WatchEvent::Modified);
+    if (isMarkedInSync) {
+      std::cout << "[cloudsyncworker] marked IN SYNC: " << fq.absPath
+                << std::endl;
+    }
     isFileUpdated = m_dbManager.deleteFileQueue(fq.path, fq.filename);
   }
 
@@ -1371,16 +1385,16 @@ void CloudSyncWorker::processQueueToSyncUp() {
           deleteFile(*client, *fq);
         }
         if (fq->sync_status == syncStatusToString(SyncStatus::MOVED)) {
-          renameFile(*client, *fq);
+          renameFile(*client, *cfProvider, *fq);
         }
         if (fq->sync_status == syncStatusToString(SyncStatus::RENAME)) {
-          renameFile(*client, *fq);
+          renameFile(*client, *cfProvider, *fq);
         }
         if (fq->sync_status == syncStatusToString(SyncStatus::NEW)) {
           uploadFile(*client, *cfProvider, *fq);
         }
         if (fq->sync_status == syncStatusToString(SyncStatus::MODIFIED)) {
-          uploadModifiedFile(*client, *fq);
+          uploadModifiedFile(*client, *cfProvider, *fq);
         }
       };
       m_uploadThreadPool.enqueue(uploadFunc);

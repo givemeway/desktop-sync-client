@@ -33,6 +33,8 @@ public:
   std::shared_ptr<SyncNode> findByInode(const std::string &inode);
   void insertPath(const std::string &path, const std::string &inode,
                   bool isDir);
+  void insertInode(const std::string &path, const std::string &inode,
+                   bool isDir);
   void renamePath(const std::string &newPath, const std::string &oldPath);
   void movePath(const std::string &newPath, const std::string &oldPath);
   void deletePath(const std::string &path);

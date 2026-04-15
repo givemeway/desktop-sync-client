@@ -866,6 +866,7 @@ void SyncWorker::handleRenamed(const std::string &path,
 
         f.filename = newFilename;
         f.path = newRelPath;
+        f.absPath = path;
 
         auto part = m_impl->m_dbManager.getFolderDevice(fs::path(newRelPath));
 

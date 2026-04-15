@@ -116,11 +116,14 @@ private:
                                  const FileQueueEntry &fq);
 
   std::optional<bool> uploadModifiedFile(ApiClient &client,
+                                         CloudFilesProvider &cfProvider,
                                          const FileQueueEntry &fq);
 
   std::optional<bool> deleteFile(ApiClient &client, const FileQueueEntry &fq);
 
-  std::optional<bool> renameFile(ApiClient &client, const FileQueueEntry &fq);
+  std::optional<bool> renameFile(ApiClient &client,
+                                 CloudFilesProvider &cfProvider,
+                                 const FileQueueEntry &fq);
 
   std::optional<bool> moveFile(ApiClient &client, const FileQueueEntry &fq);
 

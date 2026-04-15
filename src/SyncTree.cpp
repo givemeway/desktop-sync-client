@@ -98,6 +98,27 @@ std::shared_ptr<SyncNode> SyncTree::findByPath(const std::string &path) {
   return current;
 }
 
+std::shared_ptr<SyncNode> SyncTree::findByInode(const std::string &inode) {
+  std::lock_guard<std::recursive_mutex> lock(m_mtx);
+
+  std::function<std::shared_ptr<SyncNode>(const std::shared_ptr<SyncNode> &)>
+      dfs = [&](const std::shared_ptr<SyncNode> &node)
+      -> std::shared_ptr<SyncNode> {
+    if (!node)
+      return nullptr;
+    if (node->inode == inode)
+      return node;
+    for (auto &[key, child] : node->children) {
+      auto result = dfs(child);
+      if (result)
+        return result;
+    }
+    return nullptr;
+  };
+
+  return dfs(m_root);
+}
+
 void SyncTree::renamePath(const std::string &newPath,
                           const std::string &oldPath) {
   // /users/sandeep/desktop/original

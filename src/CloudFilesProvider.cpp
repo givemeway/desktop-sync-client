@@ -304,6 +304,7 @@ bool CloudFilesProvider::registerShellIcons() {
   // ── Re-register sync root with matching SyncRootIdentity ─────────────────
   // CF API links kernel registration to shell entry via SyncRootIdentity.
   // Must match the registry key name we just wrote.
+  /*
   {
     CF_SYNC_REGISTRATION reg = {};
     reg.StructSize = sizeof(reg);
@@ -312,10 +313,11 @@ bool CloudFilesProvider::registerShellIcons() {
     reg.ProviderName = nameW.c_str();
     reg.ProviderVersion = verW.c_str();
     reg.ProviderId = m_providerGuid;
-    // Convert syncRootId to bytes for SyncRootIdentity
     std::string idUtf8(syncRootId.begin(), syncRootId.end());
-    reg.SyncRootIdentity = idUtf8.data();
-    reg.SyncRootIdentityLength = static_cast<DWORD>(idUtf8.size());
+    // reg.SyncRootIdentity = idUtf8.data();
+    reg.SyncRootIdentity = (LPCVOID)idUtf8.c_str();
+    //    reg.SyncRootIdentityLength = static_cast<DWORD>(idUtf8.size());
+    reg.SyncRootIdentityLength = (DWORD)idUtf8.size();
 
     CF_SYNC_POLICIES policies = {};
     policies.StructSize = sizeof(policies);
@@ -330,7 +332,7 @@ bool CloudFilesProvider::registerShellIcons() {
     CfRegisterSyncRoot(m_syncPathW.c_str(), &reg, &policies,
                        CF_REGISTER_FLAG_UPDATE);
   }
-
+  */
   // Tell Explorer to refresh shell overlays immediately
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
 
@@ -518,8 +520,6 @@ bool CloudFilesProvider::createFilePlaceholder(
 
   CF_PLACEHOLDER_CREATE_INFO info = {};
 
-  // RelativeFileName must stay alive for the duration of CfCreatePlaceholders.
-  // We use a local wstring to guarantee lifetime.
   std::wstring filenameW = toWide(file.filename);
   info.RelativeFileName = filenameW.c_str();
   info.FsMetadata.FileSize.QuadPart = file.size;
@@ -539,12 +539,11 @@ bool CloudFilesProvider::createFilePlaceholder(
   info.FileIdentity = &identity;
   info.FileIdentityLength = sizeof(identity);
 
-  // Tell SyncWorker to ignore the Added event this will generate
-
   std::string absPath = (file.path == "/")
                             ? m_syncPath + "/" + file.filename
                             : m_syncPath + file.path + "/" + file.filename;
 
+  // Tell SyncWorker to ignore the Added event this will generate
   m_syncWorker.addIgnoreEvent(absPath, WatchEvent::Modified);
   DWORD entriesProcessed = 0;
   HRESULT hr = CfCreatePlaceholders(parentDirW.c_str(), &info, 1,
@@ -645,7 +644,8 @@ bool CloudFilesProvider::createDirsPlaceholder(
 
 bool CloudFilesProvider::createDirPlaceholder(
     const LocalFolderCreateMetadata &dir) {
-  std::wstring absDirW = toWide(dir.absPath);
+  std::wstring absDirW = fs::path(dir.absPath).make_preferred().wstring();
+  // std::wstring absDirW = toWide(dir.absPath);
   m_syncWorker.addIgnoreEvent(dir.absPath, WatchEvent::Added);
   /*
   try {
@@ -763,6 +763,8 @@ bool CloudFilesProvider::createDirPlaceholder(
     return false;
   }
 
+  markInSync(absDirW);
+
   std::cout << "[CFProvider] Dir placeholder created: " << dir.path << "\n";
   return true;
 }
@@ -796,14 +798,23 @@ bool CloudFilesProvider::markInSync(const std::wstring &absPath) {
                   FILE_FLAG_BACKUP_SEMANTICS, // required to open directories
                   nullptr);
 
-  if (hFile == INVALID_HANDLE_VALUE)
+  if (hFile == INVALID_HANDLE_VALUE) {
+    std::wcerr << "[CfProvider] markInSync: invalid file Handle: 0x" << hFile
+               << std::endl;
     return false;
+  }
 
   CF_SET_IN_SYNC_FLAGS flags = CF_SET_IN_SYNC_FLAG_NONE;
   HRESULT hr =
       CfSetInSyncState(hFile, CF_IN_SYNC_STATE_IN_SYNC, flags, nullptr);
   CloseHandle(hFile);
-  return SUCCEEDED(hr);
+  if (SUCCEEDED(hr))
+    return true;
+  else {
+    std::cerr << "[CfProvider] mark In Sync failed: 0x" << std::hex << hr
+              << std::endl;
+    return false;
+  }
 }
 
 bool CloudFilesProvider::markNotInSync(const std::wstring &absPath) {
