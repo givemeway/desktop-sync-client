@@ -131,6 +131,7 @@ struct SyncWorker::Impl {
       std::cerr
           << "[SyncWorker] dehydrateFile: CfDeHydratePlaceHolder failed: 0x"
           << std::hex << hr << std::endl;
+      CloseHandle(hFile);
       return false;
     }
 
@@ -139,11 +140,13 @@ struct SyncWorker::Impl {
     if (FAILED(hr)) {
       std::cerr << "[SyncWorker] dehydrateFile: CfSetInSyncState failed: 0x"
                 << std::hex << hr << std::endl;
+      CloseHandle(hFile);
       return false;
     }
 
     hr = CfSetPinState(hFile, CF_PIN_STATE_UNPINNED, CF_SET_PIN_FLAG_NONE,
                        nullptr);
+    CloseHandle(hFile);
     if (FAILED(hr)) {
       std::cerr << "[SyncWorker] dehydrateFile: CfSetPinState failed: 0x"
                 << std::hex << hr << std::endl;
@@ -153,7 +156,6 @@ struct SyncWorker::Impl {
     std::cout << "[Syncworker] dehydrateFile: CfDehydratePlaceholder & "
                  "CfSetPinState & CfSetInSyncState SUCCESS "
               << hr << std::endl;
-    CloseHandle(hFile);
     return true;
   }
 
@@ -172,6 +174,7 @@ struct SyncWorker::Impl {
     DWORD bytesReturned;
     HRESULT hr = CfGetPlaceholderInfo(hFile, CF_PLACEHOLDER_INFO_STANDARD,
                                       &info, sizeof(info), &bytesReturned);
+    CloseHandle(hFile);
     if (FAILED(hr)) {
       std::cerr << "[SyncWorker] fetchData: CfDeHydratePlaceHolder failed: 0x"
                 << std::hex << hr << std::endl;
@@ -180,7 +183,6 @@ struct SyncWorker::Impl {
     std::cout << "[Syncworker] fetchData: Hydration Initiated " << hr
               << std::endl;
 
-    CloseHandle(hFile);
     return;
   }
 };
@@ -674,7 +676,7 @@ void SyncWorker::handleRenamed(const std::string &path,
             dq, ActivityStatus::CLOUD_RENAME);
         addActivity(dq.uuid, syncItem);
       }
-      if (existingDir.has_value()) {
+      if (!existingDir.has_value()) {
         std::cout
             << "[syncworker] old folder name not found in DB. It has to be "
                "added as new folder"
@@ -703,14 +705,21 @@ void SyncWorker::handleRenamed(const std::string &path,
                   << path << std::endl;
         return;
       }
-
-      std::string hashStr = m_impl->m_scanner.calculateHash(path);
-      std::int64_t unixTimeStamp =
-          m_impl->m_scanner.getUnixTimeStamp(fs::last_write_time(path));
-      std::uintmax_t fileSize = fs::file_size(path);
-
+      std::int64_t unixTimeStamp;
+      std::uintmax_t fileSize;
+      std::string hashStr = "";
+      bool isPlaceholder = m_impl->m_scanner.isCloudPlaceholder(path);
+      if (isPlaceholder) {
+        auto meta = m_impl->m_scanner.getPlaceholderMeta(path);
+        unixTimeStamp = meta.mtime;
+        fileSize = meta.size;
+      } else {
+        hashStr = m_impl->m_scanner.calculateHash(path);
+        unixTimeStamp =
+            m_impl->m_scanner.getUnixTimeStamp(fs::last_write_time(path));
+        fileSize = fs::file_size(path);
+      }
       auto inode = m_impl->m_scanner.getInode(path);
-
       // 2. Database Work (LOCK)
       std::lock_guard<std::recursive_mutex> lock(
           m_impl->m_dbManager.getSyncMutex());
@@ -726,7 +735,7 @@ void SyncWorker::handleRenamed(const std::string &path,
         f.path = relPath;
         f.filename = filename;
         f.last_modified = std::to_string(unixTimeStamp);
-        f.hashvalue = hashStr;
+        f.hashvalue = hashStr == "" ? file->hashvalue : hashStr;
         f.size = fileSize;
         f.inode = inode;
         f.absPath = path;

@@ -29,13 +29,14 @@ namespace fs = std::filesystem;
 namespace sync_app {
 
 #ifdef _WIN32
-struct PlaceholderMeta {
+/*struct PlaceholderMeta {
   int64_t size = 0;
   int64_t mtime = 0; // Unix seconds
   bool valid = false;
 };
-
-static PlaceholderMeta getPlaceholderMeta(const std::string &absPath) {
+*/
+PlaceholderMeta
+FileSystemScanner::getPlaceholderMeta(const std::string &absPath) {
   PlaceholderMeta meta;
   std::wstring pathW(absPath.begin(), absPath.end());
 
@@ -63,13 +64,14 @@ static PlaceholderMeta getPlaceholderMeta(const std::string &absPath) {
   }
 
   meta.valid = true;
+  CloseHandle(hFile);
   return meta;
 }
 #ifndef IO_REPARSE_TAG_CLOUD_FILES
 #define IO_REPARSE_TAG_CLOUD_FILES 0x9000001AL
 #endif
 
-static bool isCloudPlaceholder(const std::string &absPath) {
+bool FileSystemScanner::isCloudPlaceholder(const std::string &absPath) {
   std::wstring pathW(absPath.begin(), absPath.end());
   WIN32_FIND_DATAW findData = {};
   HANDLE hFind = FindFirstFileW(pathW.c_str(), &findData);

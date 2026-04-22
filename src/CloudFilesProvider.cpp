@@ -7,7 +7,6 @@
 #include "types.hpp"
 #include <cfapi.h>
 #include <combaseapi.h>
-#include <cstddef>
 #include <errhandlingapi.h>
 #include <fileapi.h>
 #include <handleapi.h>
@@ -20,8 +19,11 @@
 #include <winnt.h>
 #include <winreg.h>
 #include <winrt/base.h>
+#include <winrt/impl/Windows.Storage.0.h>
 
 #ifdef _WIN32
+#define WIN32_NO_STATUS
+#undef WIN32_NO_STATUS
 #include "ActivityStore.hpp"
 #include "ApiClient.hpp"
 #include "DatabaseManager.hpp"
@@ -30,13 +32,13 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <ntstatus.h>
 #include <sddl.h>
 #include <shlobj.h>
 #include <vector>
-#include <winrt/Windows.Foundation.h> // <--- ADD THIS
+#include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Storage.Provider.h>
 #include <winrt/Windows.Storage.h> // Required for StorageFolder operations
-                                   //
 #pragma comment(lib, "cldapi.lib")
 #pragma comment(lib, "shell32.lib")
 
@@ -114,7 +116,6 @@ bool CloudFilesProvider::registerSyncRoot() {
         Unregister(unifiedId);
 
   } catch (winrt::hresult_error const &ex) {
-    // THIS IS THE SMOKING GUN
     std::wcerr << L"FAILED TO UNREGISTER: " << ex.message().c_str() << L" (0x"
                << std::hex << ex.to_abi() << L")" << std::endl;
   }
@@ -155,7 +156,6 @@ bool CloudFilesProvider::registerSyncRoot() {
     }
 
   } catch (winrt::hresult_error const &ex) {
-    // THIS IS THE SMOKING GUN
     std::wcerr << L"FAILED: " << ex.message().c_str() << L" (0x" << std::hex
                << ex.to_abi() << L")" << std::endl;
   }
@@ -177,27 +177,17 @@ bool CloudFilesProvider::registerSyncRoot() {
   CF_SYNC_POLICIES policies = {};
   policies.StructSize = sizeof(policies);
 
-  // FULL hydration: when the user opens a file, Windows calls FETCH_DATA
-  // and waits for us to deliver all bytes before handing the handle to the app.
   policies.Hydration.Primary = CF_HYDRATION_POLICY_FULL;
   policies.Hydration.Modifier = CF_HYDRATION_POLICY_MODIFIER_NONE;
 
-  // PARTIAL population: we create placeholders for items we know about,
-  // but we do NOT have to enumerate the entire cloud upfront.
-  //  policies.Population.Primary = CF_POPULATION_POLICY_PARTIAL;
+  // policies.Population.Primary = CF_POPULATION_POLICY_PARTIAL;
   policies.Population.Primary = CF_POPULATION_POLICY_FULL;
   policies.Population.Modifier = CF_POPULATION_POLICY_MODIFIER_NONE;
 
   // Track all in-sync states so overlay icons work
-  policies.InSync = CF_INSYNC_POLICY_TRACK_FILE_CREATION_TIME |
-                    CF_INSYNC_POLICY_TRACK_DIRECTORY_CREATION_TIME;
+  policies.InSync = CF_INSYNC_POLICY_TRACK_ALL;
 
   policies.HardLink = CF_HARDLINK_POLICY_NONE;
-  // DEFAULT management policy — deletion behavior when offline is controlled
-  // by the placeholder pin/unpin state, not by this policy.
-  // Placeholders marked CF_PIN_STATE_UNSPECIFIED (the default) can be
-  // deleted offline. Only pinned files ("Always keep on device") are
-  // protected from offline deletion.
   policies.PlaceholderManagement = CF_PLACEHOLDER_MANAGEMENT_POLICY_DEFAULT;
 
   HRESULT hr = CfRegisterSyncRoot(
@@ -371,6 +361,8 @@ bool CloudFilesProvider::start() {
       {CF_CALLBACK_TYPE_CANCEL_FETCH_DATA, onCancelFetchData},
       {CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS, onFetchPlaceholders},
       {CF_CALLBACK_TYPE_NOTIFY_DELETE, onNotifyFileDelete},
+      {CF_CALLBACK_TYPE_NOTIFY_RENAME, onNotifyRename},
+      {CF_CALLBACK_TYPE_NOTIFY_RENAME_COMPLETION, onNotifyRenameComplete},
       {CF_CALLBACK_TYPE_NOTIFY_FILE_OPEN_COMPLETION, onNotifyFileOpened},
       {CF_CALLBACK_TYPE_NOTIFY_FILE_CLOSE_COMPLETION, onNotifyFileClosed},
       CF_CALLBACK_REGISTRATION_END};
@@ -488,6 +480,41 @@ CF_PLACEHOLDER_CREATE_INFO CloudFilesProvider::buildDirPlaceholderInfo(
   return info;
 }
 
+bool CloudFilesProvider::convertToPlaceholder(const DirectoryQueueEntry &dq) {
+  std::wstring absPathW = fs::path(dq.absPath).make_preferred().wstring();
+  std::string uuid;
+  uuid = dq.uuid;
+
+  HANDLE hFile = CreateFileW(
+      absPathW.c_str(), WRITE_DAC,
+      FILE_SHARE_WRITE | FILE_SHARE_DELETE | FILE_SHARE_READ, nullptr,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+      nullptr);
+
+  ;
+  if (hFile == INVALID_HANDLE_VALUE) {
+    std::cerr << "[CFProvider] convertToPlaceHolder: cannot open file"
+              << std::endl;
+    return false;
+  }
+  PlaceholderIdentity identity = {};
+  strncpy_s(identity.uuid, uuid.c_str(), sizeof(identity.uuid) - 1);
+
+  HRESULT hr =
+      CfConvertToPlaceholder(hFile, &identity, sizeof(identity),
+                             CF_CONVERT_FLAG_MARK_IN_SYNC, nullptr, nullptr);
+  CloseHandle(hFile);
+  if (FAILED(hr)) {
+    std::wcerr << "[CfProvider] conversion to place holder failed " << absPathW
+               << std::endl;
+    return false;
+  }
+  std::wcout << "[CfProvider] conversion to Place holder SUCCESSFULL => "
+             << absPathW << std::endl;
+  markInSync(absPathW);
+  return true;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public placeholder creation
 // ─────────────────────────────────────────────────────────────────────────────
@@ -504,9 +531,9 @@ bool CloudFilesProvider::createFilePlaceholder(
     parentDirW = m_syncPathW + toWide(file.path);
     parentDir = m_syncPath + file.path;
   }
-  // bool success = createDirsPlaceholder(parentDir, file.dirIDs.value(),
-  // paths); if (!success)
-  //    return false;
+  bool success = createDirsPlaceholder(parentDir, file.dirIDs.value(), paths);
+  if (!success)
+    return false;
   // Ensure parent directory exists as a real or placeholder directory
   if (!fs::exists(toNarrow(parentDirW))) {
     std::cerr << "[CFProvider] Parent dir missing for: " << file.filename
@@ -575,12 +602,13 @@ bool CloudFilesProvider::createFilePlaceholder(
 
   HRESULT hrCfPin = CfSetPinState(hFile, CF_PIN_STATE_UNPINNED,
                                   CF_SET_PIN_FLAG_NONE, nullptr);
+  CloseHandle(hFile);
   if (FAILED(hrCfPin)) {
     std::cerr << "[CFProvider] Unable to Pin the placeholder to UNPINNED : "
               << file.path << std::endl;
     return true;
   }
-  std::cout << "[CFProvider] PINNED the place holder: " << file.path
+  std::cout << "[CFProvider] UNPINNED the place holder: " << file.path
             << std::endl;
   return true;
 }
@@ -647,69 +675,6 @@ bool CloudFilesProvider::createDirPlaceholder(
   std::wstring absDirW = fs::path(dir.absPath).make_preferred().wstring();
   // std::wstring absDirW = toWide(dir.absPath);
   m_syncWorker.addIgnoreEvent(dir.absPath, WatchEvent::Added);
-  /*
-  try {
-    if (!fs::exists(dir.absPath)) {
-      fs::create_directories(dir.absPath);
-    }
-  } catch (const std::exception &e) {
-    m_syncWorker.removeIgnoreEvent(dir.absPath, WatchEvent::Added);
-    std::cerr << "[CFProvider] createDirPlaceHolder: fs::create_directories "
-                 "failed for "
-              << dir.absPath << " : " << e.what() << std::endl;
-  }
-
-  HANDLE hDir = CreateFileW(
-      absDirW.c_str(), FILE_WRITE_ATTRIBUTES | WRITE_DAC,
-      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-      nullptr);
-
-  if (hDir == INVALID_HANDLE_VALUE) {
-    std::cerr << "[CFProvider] createDirPlaceholder : cannot open dir "
-              << dir.absPath << " error=" << GetLastError() << std::endl;
-    return false;
-  }
-  PlaceholderIdentity identity = {};
-  strncpy_s(identity.uuid, dir.uuid.c_str(), sizeof(identity.uuid) - 1);
-
-  HRESULT hr =
-      CfConvertToPlaceholder(hDir, &identity, sizeof(identity),
-                             CF_CONVERT_FLAG_MARK_IN_SYNC, nullptr, nullptr);
-  if (FAILED(hr)) {
-    if (hr != 0x80070161L && hr != 0x80071128L) {
-      std::cerr << "[CFProvider] CfConvertToPlaceholder (dir) failed for "
-                << dir.path << ": 0x" << std::hex << hr << "\n";
-      CloseHandle(hDir);
-      return false;
-    }
-  }
-  // Step 4: Set timestamps from cloud metadata
-  if (!dir.created_at.empty()) {
-    try {
-      std::cout << "[CFProvider] createDirPlaceholder: dir.created_at "
-                << std::stoll(dir.created_at) << std::endl;
-      int64_t ts = std::stoll(dir.created_at);
-      LARGE_INTEGER li = unixToLargeIntFileTime(ts);
-      FILE_BASIC_INFO fbi = {};
-      fbi.CreationTime = li;
-      fbi.LastWriteTime = li;
-      fbi.LastAccessTime = li;
-      fbi.ChangeTime = li;
-      fbi.FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
-      SetFileInformationByHandle(hDir, FileBasicInfo, &fbi, sizeof(fbi));
-    } catch (...) {
-    }
-  }
-
-  // Step 5: Mark in-sync and set pin state (allow offline deletion)
-  CfSetInSyncState(hDir, CF_IN_SYNC_STATE_IN_SYNC, CF_SET_IN_SYNC_FLAG_NONE,
-                   nullptr);
-  CfSetPinState(hDir, CF_PIN_STATE_UNSPECIFIED, CF_SET_PIN_FLAG_NONE, nullptr);
-
-  CloseHandle(hDir);
-  */
-
   std::string parentPath =
       fs::path(dir.path).parent_path().make_preferred().string();
   if (parentPath.empty())
@@ -736,7 +701,10 @@ bool CloudFilesProvider::createDirPlaceholder(
   if (!dir.created_at.empty()) {
     try {
       int64_t ts = std::stoll(dir.created_at);
-      LARGE_INTEGER li = unixToLargeIntFileTime(ts);
+      std::cout << "[CFProvider] << dir.created_at " << ts << std::endl;
+      LARGE_INTEGER li = unixToLargeIntFileTime(ts * 1000);
+      std::wcout << "[CFProvider] >> LARGE_INTEGER " << li.QuadPart
+                 << std::endl;
       info.FsMetadata.BasicInfo.CreationTime = li;
       info.FsMetadata.BasicInfo.LastWriteTime = li;
       info.FsMetadata.BasicInfo.LastAccessTime = li;
@@ -746,7 +714,7 @@ bool CloudFilesProvider::createDirPlaceholder(
   }
   info.FsMetadata.BasicInfo.FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
   info.FsMetadata.FileSize.QuadPart = 0;
-  info.Flags = CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC;
+  info.Flags = CF_PLACEHOLDER_CREATE_FLAG_DISABLE_ON_DEMAND_POPULATION;
   info.FileIdentity = &identity;
   info.FileIdentityLength = sizeof(identity);
 
@@ -791,12 +759,13 @@ bool CloudFilesProvider::markUnspecifiedPinned(const std::wstring &absPath) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 bool CloudFilesProvider::markInSync(const std::wstring &absPath) {
-  HANDLE hFile =
-      CreateFileW(absPath.c_str(), WRITE_DAC,
-                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                  nullptr, OPEN_EXISTING,
-                  FILE_FLAG_BACKUP_SEMANTICS, // required to open directories
-                  nullptr);
+  HANDLE hFile = CreateFileW(
+      absPath.c_str(), 0,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING,
+      FILE_FLAG_BACKUP_SEMANTICS |
+          FILE_FLAG_OPEN_REPARSE_POINT, // required to open directories
+      nullptr);
 
   if (hFile == INVALID_HANDLE_VALUE) {
     std::wcerr << "[CfProvider] markInSync: invalid file Handle: 0x" << hFile
@@ -859,6 +828,7 @@ bool CloudFilesProvider::dehydrateFile(const std::wstring &absPath,
   if (FAILED(hrConvert)) {
     std::wcerr << "[CFProvider] conversion to place holder failed" << absPath
                << std::endl;
+    CloseHandle(hFile);
     return false;
   }
   // Dehydrate the entire file: offset 0, length -1 means "full file"
@@ -872,6 +842,7 @@ bool CloudFilesProvider::dehydrateFile(const std::wstring &absPath,
   if (FAILED(hrHydrate)) {
     std::cerr << "[CFProvider] CfDehydratePlaceholder failed: 0x" << std::hex
               << hrHydrate << "\n";
+    CloseHandle(hFile);
     return false;
   }
 
@@ -1013,6 +984,7 @@ void CALLBACK CloudFilesProvider::onDehydrateFile(
   length.QuadPart = -1;
   HRESULT hr = CfDehydratePlaceholder(hFile, startOffset, length,
                                       CF_DEHYDRATE_FLAG_BACKGROUND, nullptr);
+  CloseHandle(hFile);
   if (FAILED(hr)) {
     std::cerr << "[CFProvider] DehydratePlaceHolder failed: 0x" << std::hex
               << hr << std::endl;
@@ -1466,8 +1438,8 @@ void CALLBACK CloudFilesProvider::onNotifyFileOpened(
     const CF_CALLBACK_INFO *info, const CF_CALLBACK_PARAMETERS *params) {
   // Informational — log which file was opened. We could use this to
   // pre-fetch the next N files in a sequence (read-ahead).
-  //  std::cout << "[CFProvider] File opened: " <<
-  //  toNarrow(info->NormalizedPath) << std::endl;
+  std::cout << "[CFProvider] File opened: " << toNarrow(info->NormalizedPath)
+            << std::endl;
 }
 
 void CALLBACK CloudFilesProvider::onNotifyFileClosed(
@@ -1475,8 +1447,62 @@ void CALLBACK CloudFilesProvider::onNotifyFileClosed(
   // If the file was modified we should trigger an upload.
   // The FilesystemWatcher will already detect the modification via efsw
   // and enqueue it through SyncWorker::handleModified — so we just log here.
-  //  std::cout << "[CFProvider] File closed: " <<
-  //  toNarrow(info->NormalizedPath) <<std::endl;
+  std::cout << "[CFProvider] File closed: " << toNarrow(info->NormalizedPath)
+            << std::endl;
+}
+
+void CALLBACK CloudFilesProvider::onNotifyRenameComplete(
+    const CF_CALLBACK_INFO *info, const CF_CALLBACK_PARAMETERS *params) {
+  auto *self = static_cast<CloudFilesProvider *>(info->CallbackContext);
+  std::wstring volumename = info->VolumeDosName;
+  std::wstring absPathW = volumename + info->NormalizedPath;
+  std::wstring oldPathW = volumename + params->Rename.TargetPath;
+
+  bool isMarkedInSync = self->markInSync(absPathW);
+
+  if (isMarkedInSync) {
+    SHChangeNotify(SHCNE_RENAMEITEM, SHCNF_PATHW, oldPathW.c_str(),
+                   absPathW.c_str());
+    std::wcout << "[CFProvider] onNotifyRenameComplete: Rename successfull "
+               << absPathW << std::endl;
+  } else {
+    std::wcout << "[CFProvider] onNotifyRenameComplete: Rename failed "
+               << absPathW << std::endl;
+  }
+}
+
+void CALLBACK CloudFilesProvider::onNotifyRename(
+    const CF_CALLBACK_INFO *info, const CF_CALLBACK_PARAMETERS *params) {
+
+  auto *self = static_cast<CloudFilesProvider *>(info->CallbackContext);
+
+  std::wcerr << L"[CFProvider] onNotifyRename" << L" path="
+             << info->NormalizedPath << L" FileId=" << info->FileId.QuadPart
+             << std::endl;
+  std::wcerr << L"TargetPath: " << params->Rename.TargetPath << std::endl;
+
+  CF_OPERATION_INFO opInfo = {0};
+  opInfo.StructSize = sizeof(opInfo);
+  opInfo.Type = CF_OPERATION_TYPE_ACK_RENAME;
+  opInfo.ConnectionKey = info->ConnectionKey;
+  opInfo.TransferKey = info->TransferKey;
+
+  CF_OPERATION_PARAMETERS opParams = {0};
+  opParams.ParamSize = sizeof(CF_OPERATION_PARAMETERS);
+  opParams.AckRename.CompletionStatus = STATUS_SUCCESS;
+  opParams.AckRename.Flags = CF_OPERATION_ACK_RENAME_FLAG_NONE;
+
+  HRESULT hr = CfExecute(&opInfo, &opParams);
+
+  if (FAILED(hr)) {
+    std::cerr << "[CFProvider] CfExecute AckRename failed: 0x" << std::hex << hr
+              << std::endl;
+    return;
+  }
+  if (SUCCEEDED(hr)) {
+    std::cerr << "[CFProvider] CfExecute AckRename SUCCESSFULL : " << std::hex
+              << hr << std::endl;
+  }
 }
 
 void CALLBACK CloudFilesProvider::onNotifyFileDelete(
@@ -1493,7 +1519,6 @@ void CALLBACK CloudFilesProvider::onNotifyFileDelete(
 
   // Use S_OK for success (equivalent to STATUS_SUCCESS)
   opParams.AckDelete.CompletionStatus = 0; // S_OK;
-
   // Correct flag name:
   opParams.AckDelete.Flags = CF_OPERATION_ACK_DELETE_FLAG_NONE;
 
@@ -1519,7 +1544,7 @@ LARGE_INTEGER CloudFilesProvider::unixToLargeIntFileTime(int64_t unixMs) {
   li.QuadPart = (unixMs * 10000LL) + EPOCH_DIFF;
   return li;
 }
-
+/*
 FILETIME
 CloudFilesProvider::unixStringToFileTime(const std::string &unixSeconds) {
   FILETIME ft = {};
@@ -1532,7 +1557,7 @@ CloudFilesProvider::unixStringToFileTime(const std::string &unixSeconds) {
   }
   return ft;
 }
-
+*/
 // ─────────────────────────────────────────────────────────────────────────────
 // Utility: GUID from provider name (deterministic, same across sessions)
 // ─────────────────────────────────────────────────────────────────────────────

@@ -148,6 +148,8 @@ public:
   // Hydrate a file synchronously (blocking) — useful for conflict handling.
   bool hydrateFile(const std::wstring &absPath);
 
+  bool convertToPlaceholder(const DirectoryQueueEntry &dq);
+
   // ── Helpers ───────────────────────────────────────────────────────────
   bool isSyncRootRegistered() const;
 
@@ -184,6 +186,12 @@ private:
 
   static void CALLBACK onDehydrateFile(const CF_CALLBACK_INFO *info,
                                        const CF_CALLBACK_PARAMETERS *params);
+
+  static void CALLBACK onNotifyRename(const CF_CALLBACK_INFO *info,
+                                      const CF_CALLBACK_PARAMETERS *params);
+
+  static void CALLBACK onNotifyRenameComplete(
+      const CF_CALLBACK_INFO *info, const CF_CALLBACK_PARAMETERS *params);
 
   // ── Internal helpers ──────────────────────────────────────────────────
 

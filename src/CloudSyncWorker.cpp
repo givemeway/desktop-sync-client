@@ -531,43 +531,41 @@ void CloudSyncWorker::processFoldersToCreate(
     updateActivity(folder.uuid, syncItem.value());
 
     auto paths = getPathComponents(folder.path);
-    /*
     if (m_cfProvider) {
       std::string absPath;
       absPath = folder.path == "/" ? m_syncPath : m_syncPath + folder.path;
       m_cfProvider->createDirsPlaceholder(absPath, folder.dirIDs.value(),
                                           paths);
     }
-    */
-    // if (!m_cfProvider) {
-    try {
-      if (!fs::exists(folder.absPath)) {
-        std::cout << "[cloudsyncworker] creating path ..." << folder.absPath
-                  << "\n";
+    if (!m_cfProvider) {
+      try {
+        if (!fs::exists(folder.absPath)) {
+          std::cout << "[cloudsyncworker] creating path ..." << folder.absPath
+                    << "\n";
+          for (auto &p : paths) {
+            auto fp = p == "/" ? m_syncPath : m_syncPath + p;
+            if (!fs::exists(fp)) {
+              m_syncWorker.addIgnoreEvent(fp, WatchEvent::Added);
+            }
+          }
+          fs::create_directories(folder.absPath);
+        }
+      } catch (const std::exception &e) {
+        std::cerr << "[cloudsyncworker] unable to create path" << folder.absPath
+                  << " | " << e.what() << "\n";
         for (auto &p : paths) {
           auto fp = p == "/" ? m_syncPath : m_syncPath + p;
           if (!fs::exists(fp)) {
-            m_syncWorker.addIgnoreEvent(fp, WatchEvent::Added);
+            // 1. Register ignore intent
+            m_syncWorker.removeIgnoreEvent(fp, WatchEvent::Added);
           }
         }
-        fs::create_directories(folder.absPath);
+        syncItem->isActive = false;
+        syncItem->isError = true;
+        updateActivity(folder.uuid, syncItem.value());
+        continue;
       }
-    } catch (const std::exception &e) {
-      std::cerr << "[cloudsyncworker] unable to create path" << folder.absPath
-                << " | " << e.what() << "\n";
-      for (auto &p : paths) {
-        auto fp = p == "/" ? m_syncPath : m_syncPath + p;
-        if (!fs::exists(fp)) {
-          // 1. Register ignore intent
-          m_syncWorker.removeIgnoreEvent(fp, WatchEvent::Added);
-        }
-      }
-      syncItem->isActive = false;
-      syncItem->isError = true;
-      updateActivity(folder.uuid, syncItem.value());
-      continue;
     }
-    //}
 
     // 2. Database operation (locked)
     auto folderPaths = getPathComponents(folder.path);
@@ -661,6 +659,16 @@ void CloudSyncWorker::processDirsToMove(
     std::string newAbsPath;
     oldAbsPath = *d.old_path == "/" ? m_syncPath : m_syncPath + *d.old_path;
     newAbsPath = d.path == "/" ? m_syncPath : m_syncPath + d.path;
+    std::string oldParent = fs::path(oldAbsPath).parent_path().generic_string();
+    std::string newParent = fs::path(newAbsPath).parent_path().generic_string();
+    bool isRenamed = false;
+
+    if (oldParent == newParent) {
+      isRenamed = true;
+      std::cout << "[cloudsyncworker] isRenamed: " << isRenamed << " | "
+                << newAbsPath << std::endl;
+    }
+
     auto syncItem = m_activityStore.getActivity(d.uuid);
     syncItem->isActive = true;
     syncItem->inQueue = false;
@@ -668,12 +676,20 @@ void CloudSyncWorker::processDirsToMove(
     try {
 
       if (fs::exists(oldAbsPath)) {
-        m_syncWorker.addIgnoreEvent(newAbsPath, WatchEvent::Moved);
+        if (isRenamed) {
+          m_syncWorker.addIgnoreEvent(newAbsPath, WatchEvent::Renamed);
+        } else {
+          m_syncWorker.addIgnoreEvent(newAbsPath, WatchEvent::Moved);
+        }
         fs::rename(oldAbsPath, newAbsPath);
       }
 
     } catch (const std::exception &e) {
-      m_syncWorker.removeIgnoreEvent(newAbsPath, WatchEvent::Moved);
+      if (isRenamed) {
+        m_syncWorker.removeIgnoreEvent(newAbsPath, WatchEvent::Renamed);
+      } else {
+        m_syncWorker.removeIgnoreEvent(newAbsPath, WatchEvent::Moved);
+      }
       std::cout << "[cloudsyncworker] move failed: " << e.what() << std::endl;
       std::cout << "[cloudsyncworker] newPath : " << d.path
                 << " |  oldPath : " << *d.old_path << std::endl;
@@ -1114,6 +1130,10 @@ CloudSyncWorker::createFolderInCloud(DirectoryQueueEntry &dq) {
     syncItem->inQueue = false;
     updateActivity(dq.uuid, syncItem.value());
     return false;
+  }
+
+  if (m_cfProvider) {
+    m_cfProvider->convertToPlaceholder(dq);
   }
 
   {

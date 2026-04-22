@@ -101,12 +101,10 @@ std::string Utility::getInode(const std::string &absPath) {
 
 #ifdef _WIN32
 
-  HANDLE hFile = CreateFileW(
-      std::wstring(absPath.begin(), absPath.end())
-          .c_str(), // Basic conversion, assuming ASCII/UTF8 overlap for now
-      0,            // No access rights needed for attributes
-      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+  HANDLE hFile =
+      CreateFileW(std::wstring(absPath.begin(), absPath.end()).c_str(), 0,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                  OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
 
   if (hFile == INVALID_HANDLE_VALUE)
     return "";

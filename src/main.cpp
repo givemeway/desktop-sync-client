@@ -112,9 +112,8 @@ int main(int argc, char *argv[]) {
         std::cout << "[Main] Starting QDriveSync folder..." << std::endl;
         cfProvider.run();
         // cfProvider.stop();
-        // std::cout << "[Main] Stopping QDriveSync folder..." << std::endl;
-        // std::cout << "[Main] DeRegistering QDriveSync folder..." <<
-        // std::endl;
+        //  std::cout << "[Main] Stopping QDriveSync folder..." << std::endl;
+        std::cout << "[Main] DeRegistering QDriveSync folder..." << std::endl;
         // cfProvider.unregisterSyncRoot();
         std::cout << "[Main] Database initializing in background..."
                   << std::endl;
