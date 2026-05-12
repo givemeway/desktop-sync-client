@@ -6,8 +6,141 @@ import AuraUI 1.0
 
 Item {
     id: dashboardRoot
+  function computeSyncStatus(isSyncing,filesSyncing){
+    if(isSyncing && filesSyncing > 0){
+      return " Syncing.. " + filesSyncing + " items";
+    }
+    if(isSyncing && filesSyncing == 0){
+      return " Your files are up to date";
+    }
+    if(!isSyncing){
+      return " Sync Disabled";
+    }
+  }
+function syncStatusIcon(isSyncing,filesSyncing){
+    if(isSyncing && filesSyncing > 0)
+      return "\uf021";
+    if(!isSyncing)
+      return "((•))";
+    if(isSyncing && filesSyncing == 0){
+      return "\uf00c";
+    }
+  }
+  function relativeTime(unixSeconds) {
+          const now = Math.floor(Date.now() / 1000)
+          let diff = now - parseInt(unixSeconds)
 
-    // ── Page Title ────────────────────────────────────────────────────────────
+          if (diff < 0)
+              diff = 0
+
+          if (diff < 60)
+              return "now"
+
+          const minute = 60
+          const hour = 3600
+          const day = 86400
+          const week = 7 * day
+          const month = 30 * day
+          const year = 365 * day
+
+          if (diff < hour) {
+              const n = Math.floor(diff / minute)
+              return n + (n === 1 ? " min ago" : " min ago")
+          }
+
+          if (diff < day) {
+              const n = Math.floor(diff / hour)
+              return n + (n === 1 ? " hour ago" : " hours ago")
+          }
+
+          if (diff < week) {
+              const n = Math.floor(diff / day)
+              return n + (n === 1 ? " day ago" : " days ago")
+          }
+
+          if (diff < month) {
+              const n = Math.floor(diff / week)
+              return n + (n === 1 ? " week ago" : " weeks ago")
+          }
+
+          if (diff < year) {
+              const n = Math.floor(diff / month)
+              return n + (n === 1 ? " month ago" : " months ago")
+          }
+
+          const n = Math.floor(diff / year)
+          return n + (n === 1 ? " year ago" : " years ago")
+      }
+    function fileIcon(filename, isFolder) {
+            if (isFolder) return "\uf07c"
+            var ext = filename.split('.').pop().toLowerCase()
+            switch(ext) {
+                case "pdf":                     return "\uf1c1"
+                case "zip": case "rar":         return "\uf1c6"
+                case "doc": case "docx":        return "\uf1c2"
+                case "xls": case "xlsx":        return "\uf1c3"
+                case "ppt": case "pptx":        return "\uf1c4"
+                case "png": case "jpg":
+                case "jpeg": case "gif":        return "\uf1c5"
+                case "mp4": case "mov":
+                case "avi":                     return "\uf1c8"
+                case "mp3": case "wav":         return "\uf1c7"
+                case "js": case "ts":
+                case "py": case "cpp":
+                case "h":  case "qml":          return "\uf1c9"
+                case "html": case "htm":        return "\uf13b"
+                case "md":                      return "\uf15c"
+                case "dll":                     return "\uf013"
+                case "json":                    return "\uf1c9"
+                default:                        return "\uf15b"
+            }
+    }
+    function fileIconColor(filename, isFolder) {
+                if (isFolder) return "#60A5FA"
+                var ext = filename.split('.').pop().toLowerCase()
+                switch(ext) {
+                    case "pdf":                     return "#EF4444"
+                    case "zip": case "rar":         return "#F59E0B"
+                    case "doc": case "docx":        return "#3B82F6"
+                    case "xls": case "xlsx":        return "#10B981"
+                    case "ppt": case "pptx":        return "#F97316"
+                    case "png": case "jpg":
+                    case "jpeg": case "gif":        return "#8B5CF6"
+                    case "mp4": case "mov":         return "#EC4899"
+                    case "mp3": case "wav":         return "#06B6D4"
+                    case "js": case "ts":
+                    case "py": case "cpp":
+                    case "h":  case "qml":          return "#84CC16"
+                    case "html":                    return "#F97316"
+                    case "dll":                     return "#A0AEC0"
+                    default:                        return "#A0AEC0"
+                }
+            }
+   function typeName(m,u){
+      switch(m){
+        case "upload"              : return "Added " + relativeTime(u) 
+        case "download"            : return "Added " + relativeTime(u)
+        case "local_folder_create" : return "Added " + relativeTime(u)
+        case "cloud_folder_create" : return "Added " + relativeTime(u)
+        case "local_delete"        : return "Deleted " + relativeTime(u)
+        case "cloud_delete"        : return "Deleted " + relativeTime(u)
+        case "local_move"          : return "Moved " + relativeTime(u)
+        case "cloud_move"          : return "Moved " +  relativeTime(u)
+        case "cloud_rename"        : return "Renamed " + relativeTime(u)
+        case "local_rename"        : return "Renamed " + relativeTime(u)
+        default : return "unknown"
+      }
+    }
+    function getStatusText(status,meta,percentage,type,lastUpdated){
+     if(status == "syncing"){
+        return "syncing";
+      }
+      if(status == "queued")
+        return "queued";
+      if(status == "done"){
+        return typeName(type,lastUpdated);
+      }
+    } // ── Page Title ────────────────────────────────────────────────────────────
     Text {
         id: pageTitle
         text: "Dashboard"
@@ -42,7 +175,7 @@ Item {
                 spacing: 4
 
                 Text {
-                    text: "72%"
+                    text: (syncController.usagePercentage * 100).toFixed(2) + "%"
                     color: Theme.auraCyan
                     font.pixelSize: 22
                     font.weight: Font.Bold
@@ -56,7 +189,8 @@ Item {
                     anchors.horizontalCenter: parent.horizontalCenter
                 }
                 Text {
-                    text: "7.2 TB / 10 TB used"
+                    //text: "7.2 TB / 10 TB used"
+                    text: syncController.storageUsed + " / " + syncController.quota + " used"
                     color: Theme.textSecondary
                     font.pixelSize: 12
                     anchors.horizontalCenter: parent.horizontalCenter
@@ -64,7 +198,7 @@ Item {
             }
 
             // ── Orb + Rings ───────────────────────────────────────────────────
-            /*Item {
+            Item {
                 id: orbArea
                 width: 400
                 height: 400
@@ -105,7 +239,7 @@ Item {
                         ctx.beginPath()
                         ctx.arc(cx, cy, rInner,
                                 -Math.PI / 2,
-                                -Math.PI / 2 + Math.PI * 2 * 0.45)
+                                -Math.PI / 2 + Math.PI * 2 * 0.55 )
                         ctx.strokeStyle = cyanGrad
                         ctx.lineWidth = 3
                         ctx.lineCap = "round"
@@ -117,7 +251,7 @@ Item {
                         purpleGrad.addColorStop(1, "#6D28D9")
                         ctx.beginPath()
                         ctx.arc(cx, cy, rOuter,
-                                -Math.PI / 2 + Math.PI * 2 * 0.55,
+                                -Math.PI / 2 + Math.PI * 2 * 0.45,
                                 -Math.PI / 2 + Math.PI * 2)
                         ctx.strokeStyle = purpleGrad
                         ctx.lineWidth = 2
@@ -156,8 +290,8 @@ Item {
                     // Pulse animation
                     SequentialAnimation on scale {
                         loops: Animation.Infinite
-                        NumberAnimation { to: 1.025; duration: 3000; easing.type: Easing.InOutSine }
-                        NumberAnimation { to: 1.0;   duration: 3000; easing.type: Easing.InOutSine }
+                        NumberAnimation { to: 1.025; duration: 1500; easing.type: Easing.InOutSine }
+                        NumberAnimation { to: 1.0;   duration: 1500; easing.type: Easing.InOutSine }
                     }
 
                     // Base sphere gradient (dark blue-purple bottom, light blue top)
@@ -234,14 +368,12 @@ Item {
                     }
                 }
             }
-            */
-
             // ---- Status pill -------------------------------------------------
             Rectangle {
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: 12
                 anchors.horizontalCenter: parent.horizontalCenter
-                width: 250; height: 30
+                width: 250; height: 40
                 radius: 15
                 color: "#20FFFFFF"
                 border.color: Theme.glassBorder
@@ -249,13 +381,14 @@ Item {
 
                 Row {
                     anchors.centerIn: parent
-                    spacing: 8
-                    Text { text: "((•))"; color: Theme.auraPurple; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
-                    Text { text: "Status: Syncing (18 mins remaining)"; color: Theme.textSecondary; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
-                }
+                    spacing: 4
+                    Text { text: dashboardRoot.syncStatusIcon(syncController.isSyncing,syncController.filesSyncing);
+                          color: Theme.auraPurple; font.pixelSize: 16; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: dashboardRoot.computeSyncStatus(syncController.isSyncing,syncController.filesSyncing); 
+                          color: syncController.isSyncing ? Theme.successGreen : Theme.textSecondary; font.pixelSize: 16; anchors.verticalCenter: parent.verticalCenter }
+                  }
             }
         }
-
         // ══ RIGHT: Activity + Cards ══════════════════════════════════════════
         Item {
             width: parent.width - orbColumn.width
@@ -264,7 +397,8 @@ Item {
             Column {
                 anchors.fill: parent
                 spacing: 20
-
+                width:parent.width
+                height: parent.height
                 // Recent Sync Activity header
                 Text {
                     text: "Recent Sync Activity"
@@ -272,71 +406,74 @@ Item {
                     font.pixelSize: 15
                     font.weight: Font.Medium
                 }
-
                 // Activity list
+                /*
                 Column {
                     width: parent.width
                     spacing: 14
-
+                    height: 150
                     Repeater {
-                        model: [
-                            { name: "Design_Final.pdf",    meta: "Syncing",    progress: 72,  syncing: true  },
-                            { name: "Client_Brief.docx",   meta: "4 mins ago", progress: 100, syncing: false },
-                            { name: "project_asset_v9.png",meta: "12 mins ago",progress: 100, syncing: false }
-                        ]
-
+                        id: recentRepeater
+                        model: syncController.activityModel
+                        height: parent.height
+                        width: parent.width
                         delegate: Column {
                             width: parent.width
-                            spacing: 6
-
+                            property int startIndex: Math.max(0,recentRepeater.count - 10)
+                            visible: index >=startIndex
+                            height: visible ? implicitHeight: 0
+                            spacing: visible ? 6:0
                             Row {
                                 width: parent.width
                                 spacing: 12
-
                                 // File icon
                                 Rectangle {
                                     width: 34; height: 34; radius: 8
-                                    color: "#1A1D26"
-                                    border.color: "#2A2D38"
-                                    border.width: 1
+                                    color : "transparent"
                                     Text {
-                                        anchors.centerIn: parent
-                                        text: index === 1 ? "📝" : index === 2 ? "🖼" : "📄"
-                                        font.pixelSize: 14
+                                          anchors.centerIn: parent
+                                          text: dashboardRoot.fileIcon(name, meta === "folder")
+                                          font.family: "Font Awesome 7 Free"
+                                          font.weight: Font.Black
+                                          font.pixelSize: 24
+                                          color: dashboardRoot.fileIconColor(name, meta === "folder")
                                     }
                                 }
-
                                 // Name + meta
                                 Column {
-                                    width: parent.width - 34 - 12 - (modelData.syncing ? 32 : 0)
+                                    width: parent.width - 34 - 12 - (status == "syncing" ? 32 : 0)
                                     spacing: 3
                                     anchors.verticalCenter: parent.verticalCenter
-
                                     Text {
-                                        text: modelData.name
+                                        text: name
                                         color: Theme.textPrimary
                                         font.pixelSize: 13
                                         font.weight: Font.Medium
                                         elide: Text.ElideRight
                                         width: parent.width
                                     }
+                                    
                                     Text {
-                                        text: modelData.meta
-                                        color: modelData.syncing ? Theme.auraCyan : Theme.textSecondary
+                                        text: dashboardRoot.getStatusText(status,meta,percentage,type,lastUpdated)
+                                        color: status == "syncing" ? Theme.textPrimary : Theme.textSecondary 
                                         font.pixelSize: 10
-                                    }
+                                        opacity: 0.7
+                                        wrapMode: Text.NoWrap
+                                        elide: Text.ElideRight
+                                        maximumLineCount: 1
+                                        clip: true
+ 
+                                      }
                                 }
-
                                 // Progress % badge
                                 Text {
-                                    text: modelData.progress + "%"
+                                    text: percentage
                                     color: Theme.textSecondary
                                     font.pixelSize: 11
-                                    visible: modelData.syncing
+                                    visible: status == "syncing" && meta != "folder"
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
                             }
-
                             // Progress bar (syncing only)
                             Rectangle {
                                 width: parent.width - 46
@@ -344,10 +481,10 @@ Item {
                                 height: 2
                                 radius: 1
                                 color: "#1A1D26"
-                                visible: modelData.syncing
+                                visible: status == "syncing" && meta != "folder"
 
                                 Rectangle {
-                                    width: parent.width * (modelData.progress / 100)
+                                    width: parent.width * progress
                                     height: 2
                                     radius: 1
                                     gradient: Gradient {
@@ -360,7 +497,7 @@ Item {
                         }
                     }
                 }
-
+                  */
                 // Flexible spacer
                 Item { width: 1; height: parent.height - 200 - 160 }
 

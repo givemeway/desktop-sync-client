@@ -13,7 +13,8 @@ struct pathParts {
 };
 class DatabaseManager {
 public:
-  DatabaseManager(const std::string &dbPath, const std::string &syncPath);
+  DatabaseManager(const std::string &dbPath, const std::string &activityDBPath,
+                  const std::string &syncPath);
   ~DatabaseManager();
 
   // Connection management
@@ -40,6 +41,15 @@ public:
   bool deleteAllFilesInQueue();
 
   bool deleteAllDirsInQueue();
+
+  // activity operations -----------------
+  bool insertActivity(const SyncItem &activity);
+  bool updateActivity(const SyncItem &activity, const std::string &uuid);
+  bool removeActivity(const std::string &uuid);
+  std::optional<std::vector<SyncItem>> getAllActivities();
+  void cleanupActivities();
+
+  // ---------------------------------------
 
   bool moveFile(const FileMetadata &f, const FileQueueEntry &fq);
 
@@ -173,6 +183,7 @@ public:
 
 private:
   std::string m_dbPath;
+  std::string m_activityDBPath;
   std::string m_syncPath;
   struct Impl;
   std::unique_ptr<Impl> m_impl;

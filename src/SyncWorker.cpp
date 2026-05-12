@@ -2,6 +2,7 @@
 #include "ActivityStore.hpp"
 #include "FileSystemScanner.hpp"
 #include "FilesystemWatcher.hpp"
+#include "SyncTree.hpp"
 #include "ThreadPool.hpp"
 #include "Utility.hpp"
 #include "UuidUtils.hpp"
@@ -61,6 +62,7 @@ struct SyncWorker::Impl {
   DatabaseManager &m_dbManager;
   FileSystemScanner &m_scanner;
   ActivityStore &m_activityStore;
+  SyncTree &m_syncTree;
   std::string m_syncPath;
 
   std::queue<SyncEvent> m_eventQueue;
@@ -88,10 +90,11 @@ struct SyncWorker::Impl {
   std::condition_variable m_upSyncCV;
 
   Impl(DatabaseManager &dbManager, FileSystemScanner &scanner,
-       ActivityStore &activityStore, ThreadPool &threadPool,
+       ActivityStore &activityStore, ThreadPool &threadPool, SyncTree &syncTree,
        const std::string &syncPath)
       : m_dbManager(dbManager), m_activityStore(activityStore),
-        m_scanner(scanner), m_threadPool(threadPool), m_syncPath(syncPath) {}
+        m_scanner(scanner), m_threadPool(threadPool), m_syncTree(syncTree),
+        m_syncPath(syncPath) {}
 
   template <typename T> void pop(T &t) { t.pop(); }
   template <typename T1, typename T2> void push(T1 &t, T2 &t2) { t.push(t2); }
@@ -159,39 +162,27 @@ struct SyncWorker::Impl {
     return true;
   }
 
-  void fetchData(const std::string &absPath) {
-    HANDLE hFile = CreateFileA(
-        absPath.c_str(), WRITE_DAC,
-        FILE_SHARE_WRITE | FILE_SHARE_DELETE | FILE_SHARE_READ, nullptr,
-        OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  void hydrateFile(const std::string &absPath) {
+    HANDLE hFile =
+        CreateFileA(absPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile == INVALID_HANDLE_VALUE) {
       std::cerr << "[SyncWorker] fetchData: cannot open file :" << absPath
                 << std::endl;
       return;
     }
-    CF_PLACEHOLDER_STANDARD_INFO info = {};
-    DWORD bytesReturned;
-    HRESULT hr = CfGetPlaceholderInfo(hFile, CF_PLACEHOLDER_INFO_STANDARD,
-                                      &info, sizeof(info), &bytesReturned);
+    char buf;
+    DWORD bytesRead = 0;
+    ReadFile(hFile, &buf, 1, &bytesRead, nullptr);
     CloseHandle(hFile);
-    if (FAILED(hr)) {
-      std::cerr << "[SyncWorker] fetchData: CfDeHydratePlaceHolder failed: 0x"
-                << std::hex << hr << std::endl;
-      return;
-    }
-    std::cout << "[Syncworker] fetchData: Hydration Initiated " << hr
-              << std::endl;
-
-    return;
   }
 };
 
 SyncWorker::SyncWorker(DatabaseManager &dbManager, FileSystemScanner &scanner,
                        ActivityStore &activityStore, ThreadPool &threadPool,
-                       const std::string &syncPath)
+                       SyncTree &syncTree, const std::string &syncPath)
     : m_impl(std::make_unique<Impl>(dbManager, scanner, activityStore,
-                                    threadPool, syncPath)) {}
+                                    threadPool, syncTree, syncPath)) {}
 
 // SyncWorker::~SyncWorker() = default;
 SyncWorker::~SyncWorker() { stop(); }
@@ -924,7 +915,6 @@ void SyncWorker::handleRenamed(const std::string &path,
         bool isFileMoved = m_impl->m_dbManager.renameFile(f, fq);
 
         if (!isFileMoved) {
-
           std::cerr << "[syncworker] unable to move the file from => "
                     << oldRelPath << " to =>" << newRelPath << std::endl;
         } else {
@@ -970,7 +960,8 @@ void SyncWorker::handleModified(const std::string &path) {
     } else {
       std::cout << "[SyncWorker] FILE ATTRIBUTE PINNED: FETCH_DATA: " << path
                 << std::endl;
-      //      m_impl->fetchData(path);
+      std::string absPath = fs::path(path).make_preferred().string();
+      m_impl->hydrateFile(absPath);
     }
     return;
   }

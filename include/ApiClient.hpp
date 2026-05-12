@@ -1,6 +1,7 @@
 #pragma once
 
 #include "types.hpp"
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -53,6 +54,8 @@ public:
 
   bool downloadFileById(const std::string &id);
   bool deleteFileById(const std::string &id);
+
+  std::optional<size_t> getQuotaUsage();
 
 private:
   struct Impl;

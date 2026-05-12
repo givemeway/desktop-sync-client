@@ -124,7 +124,8 @@ ApplicationWindow {
                         Repeater {
                             model: [
                                 { label: "Home",     sub: "Dashboard", icon: "\uf015", view: "qrc:/AuraUI/DashboardView.qml" },
-                                { label: "Syncing",  sub: "Active",    icon: "\uf021", view: "qrc:/AuraUI/ActivityView.qml"  },
+                                { label: "Login",    sub: "Login",     icon: "\uf015", view: "qrc:/AuraUI/LoginView.qml" },
+                                { label: "Activity", sub: "Active",    icon: "\uf021", view: "qrc:/AuraUI/ActivityView.qml"  },
                                 { label: "Files",    sub: "Folders",   icon: "\uf07c", view: "qrc:/AuraUI/ExplorerView.qml"  },
                                 { label: "Sharing",  sub: "Links",     icon: "\uf0c1", view: ""                              },
                                 { label: "Backups",  sub: "Snapshots", icon: "\uf1da", view: ""                              },

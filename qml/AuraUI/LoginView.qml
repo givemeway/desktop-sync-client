@@ -79,7 +79,7 @@ Item {
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "Aura Cloud Sync"
+                text: "QDrive Cloud Sync"
                 font.pixelSize: 22
                 font.weight: Font.Bold
                 color: Theme.textPrimary

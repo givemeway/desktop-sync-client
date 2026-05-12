@@ -89,6 +89,80 @@ Item {
         default : return "unknown"
       }
     }
+
+    function relativeTime(unixSeconds) {
+        const now = Math.floor(Date.now() / 1000)
+        let diff = now - parseInt(unixSeconds)
+
+        if (diff < 0)
+            diff = 0
+
+        if (diff < 60)
+            return "now"
+
+        const minute = 60
+        const hour = 3600
+        const day = 86400
+        const week = 7 * day
+        const month = 30 * day
+        const year = 365 * day
+
+        if (diff < hour) {
+            const n = Math.floor(diff / minute)
+            return n + (n === 1 ? " min ago" : " min ago")
+        }
+
+        if (diff < day) {
+            const n = Math.floor(diff / hour)
+            return n + (n === 1 ? " hour ago" : " hours ago")
+        }
+
+        if (diff < week) {
+            const n = Math.floor(diff / day)
+            return n + (n === 1 ? " day ago" : " days ago")
+        }
+
+        if (diff < month) {
+            const n = Math.floor(diff / week)
+            return n + (n === 1 ? " week ago" : " weeks ago")
+        }
+
+        if (diff < year) {
+            const n = Math.floor(diff / month)
+            return n + (n === 1 ? " month ago" : " months ago")
+        }
+
+        const n = Math.floor(diff / year)
+        return n + (n === 1 ? " year ago" : " years ago")
+    }
+    function typeName(m,u){
+      switch(m){
+        case "upload"              : return "Added " + relativeTime(u) 
+        case "download"            : return "Added " + relativeTime(u)
+        case "local_folder_create" : return "Added " + relativeTime(u)
+        case "cloud_folder_create" : return "Added " + relativeTime(u)
+        case "local_delete"        : return "Deleted " + relativeTime(u)
+        case "cloud_delete"        : return "Deleted " + relativeTime(u)
+        case "local_move"          : return "Moved " + relativeTime(u)
+        case "cloud_move"          : return "Moved " +  relativeTime(u)
+        case "cloud_rename"        : return "Renamed " + relativeTime(u)
+        case "local_rename"        : return "Renamed " + relativeTime(u)
+        default : return "unknown"
+      }
+    }
+    function getStatusText(status,meta,percentage,type,lastUpdated){
+      if(status == "syncing" && meta != "folder"){
+          return percentage;
+      }
+      if(status == "syncing" && meta == "folder"){
+        return "syncing"
+      }
+      if(status == "queued")
+        return "queued";
+      if(status == "done"){
+        return typeName(type,lastUpdated);
+      }
+    }
     function typeColor(m){
       switch(m){
         case "upload"              : return Theme.auraCyan
@@ -120,7 +194,7 @@ Item {
                 font.weight: Font.Medium
                 Layout.fillWidth: true
             }
-
+            /*
             // Search bar
             Rectangle {
                 width: 190; height: 34
@@ -164,7 +238,8 @@ Item {
                 Layout.alignment: Qt.AlignVCenter
                 Text { text: "Upload"; color: "white"; anchors.centerIn: parent; font.pixelSize: 12; font.weight: Font.Medium }
                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor }
-            }
+              }
+              */
         }
 
         // ── File List Panel ───────────────────────────────────────────────────
@@ -183,19 +258,17 @@ Item {
                 spacing: 10
 
                 // Table headers
-                RowLayout {
+                /*    
+                 *    RowLayout {
                     width: parent.width
                     height: 28
-                    Text { text: "Status";        color: Theme.textSecondary; font.pixelSize: 12; Layout.preferredWidth: 52 }
-                    Text { text: "Name";          color: Theme.textSecondary; font.pixelSize: 12; Layout.preferredWidth: 200  }
-                    Text { text: "Progress";      color: Theme.textSecondary; font.pixelSize: 12; Layout.preferredWidth: 90 }
-                    Text { text: "Type";          color: Theme.textSecondary; font.pixelSize: 12; Layout.preferredWidth: 90 }
-                    Text { text: "Size";          color: Theme.textSecondary; font.pixelSize: 12; Layout.preferredWidth: 90 }
-                    Text { text: "Path";          color: Theme.textSecondary; font.pixelSize: 12; Layout.preferredWidth: 200 }
+                    Layout.alignment: Qt.AlignLeft
+                    //Text { text: "Status";   horizontalAlignment: Text.AlignLeft;width: 50;    color: Theme.textSecondary; font.pixelSize: 13; Layout.preferredWidth: 50 }
+                    Text { text: "Name";      color: Theme.textSecondary; font.pixelSize: 12; Layout.preferredWidth: 250  }
+                    Text { text: "Size";      color: Theme.textSecondary; font.pixelSize: 12; Layout.preferredWidth: 90 }
                   }
-
                 Rectangle { width: parent.width; height: 1; color: Theme.glassBorder }
-
+                */
                 // File rows
                 ListView {
                     width: parent.width
@@ -204,12 +277,31 @@ Item {
                     clip: true
                     model: syncController.activityModel
 
+                    section.property: "group"
+                        section.criteria: ViewSection.FullString
+
+                        section.delegate: Rectangle {
+                            width: ListView.view.width
+                            height: 30
+                            color: "transparent"
+
+                            Text {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 6
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: section
+                                color: Theme.textSecondary
+                                font.pixelSize: 11
+                                font.weight: Font.Bold
+                            }
+                        }
+
                     ScrollBar.vertical: ScrollBar {
                       policy: ScrollBar.AsNeeded    // only shows when content overflows
                     }
                     delegate: Rectangle {
                         width: ListView.view.width
-                        height: 52
+                        height: 75
                         radius: 10
                        // color: status == "syncing" ? "#1A334466" : "transparent"
                         border.color: status == "syncing" ? "#336699" : "transparent"
@@ -231,68 +323,55 @@ Item {
                             anchors.fill: parent
                             anchors.leftMargin: 8
                             anchors.rightMargin: 8
-                            spacing: 14
+                            height: parent.height
+                            spacing: 1
                             Layout.alignment: Qt.AlignVCenter
-                            // Status indicator
-                            Item {
-                                Layout.preferredWidth: 36
-                                Layout.preferredHeight: 36
-                                Layout.alignment: Qt.AlignVCenter
-                                Text {
-                                    id: statusIconText
-                                    anchors.centerIn: parent
-                                    text: activityRoot.statusIcon(status)
-                                    font.family: "Font Awesome 7 Free"
-                                    font.weight: Font.Black
-                                    font.pixelSize: 16
-                                    color: activityRoot.statusColor(status)
-
-                                    RotationAnimation on rotation {
-                                        running: status === "syncing"
-                                        from: 0; to: 360
-                                        duration: 1800
-                                        loops: Animation.Infinite
-                                    }
-                                }
-                            }
                             // File icon + name
                             RowLayout {
-                                Layout.preferredWidth: 200
+                                Layout.preferredWidth: 250
+                                width: 250
                                 Layout.alignment: Qt.AlignVCenter
-                                spacing: 10
-
-                                Rectangle {
-                                  width: 30; height: 30; radius: 6
-                                 // color: "transparent"
-                                  color: Qt.rgba(
-                                        parseInt(activityRoot.fileIconColor(name, type === "folder").slice(1,3), 16)/255,
-                                        parseInt(activityRoot.fileIconColor(name, type === "folder").slice(3,5), 16)/255,
-                                        parseInt(activityRoot.fileIconColor(name, type === "folder").slice(5,7), 16)/255,
-                                        0.15)
-                                  //anchors.verticalCenter: parent.verticalCenter
-
-                                  Text {
+                                height: parent.height 
+                                spacing: 1
+                                // Status indicator
+                                Item {
+                                    width: 50
+                                    Layout.preferredWidth: 50
+                                    Layout.preferredHeight: parent.height
+                                    Layout.alignment: Qt.AlignVCenter
+                                    Text {
+                                        id: statusIconText
                                         anchors.centerIn: parent
-                                        text: activityRoot.fileIcon(name, meta === "folder")
+                                        text: activityRoot.statusIcon(status)
                                         font.family: "Font Awesome 7 Free"
                                         font.weight: Font.Black
                                         font.pixelSize: 16
-                                        color: activityRoot.fileIconColor(name, meta === "folder")
-                                        // color: "white"
+                                        color: activityRoot.statusColor(status)
+
+                                        RotationAnimation on rotation {
+                                            running: status === "syncing"
+                                            from: 0; to: 360
+                                            duration: 1800
+                                            loops: Animation.Infinite
+                                        }
                                     }
                                 }
-                              /*
-                                Text {
-                                    text: name
-                                    color: Theme.textPrimary
-                                    font.pixelSize: 13
-                                    font.weight: Font.Medium
-                                    elide: Text.ElideRight
-                                    Layout.preferredWidth: 170
+                                Rectangle {
+                                  width: 50;
+                                  height: parent.height;
+                                  radius: 6
+                                  color: "transparent"
+                                  Text {
+                                          anchors.centerIn: parent
+                                          text: activityRoot.fileIcon(name, meta === "folder")
+                                          font.family: "Font Awesome 7 Free"
+                                          font.weight: Font.Black
+                                          font.pixelSize: 36 
+                                          color: activityRoot.fileIconColor(name, meta === "folder")
+                                      }
                                 }
-                              */
+
                                 Column {
-                                    //anchors.verticalCenter: parent.verticalCenter
                                     spacing: 2
                                     Layout.preferredWidth: 170
                                     Text {
@@ -312,36 +391,26 @@ Item {
                                         maximumLineCount: 1
                                         clip: true
                                     }
+                                    Text {
+                                        text: activityRoot.getStatusText(status,meta,percentage,type,lastUpdated)
+                                        color: status == "syncing" ? Theme.textPrimary : Theme.textSecondary 
+                                        font.pixelSize: 10
+                                        opacity: 0.7
+                                        wrapMode: Text.NoWrap
+                                        elide: Text.ElideRight
+                                        maximumLineCount: 1
+                                        clip: true
+ 
+                                      }
                                 }
-                              }
-
-                            Text {
-                                  text: status == "syncing" ? meta != "folder" ? percentage : status : status
-                                  color: status == "syncing" ? Theme.textPrimary : Theme.textSecondary
-                                  font.pixelSize: 12
-                                  Layout.preferredWidth: 90
-                              }
-                            Text {
-                                text: activityRoot.typeIcon(type) // downloading - uploading - folder create - folder move etc
-                                color: activityRoot.typeColor(type)
-                                font.pixelSize: 12
-                                Layout.preferredWidth: 90
                             }
-
                             Text {
                               text: meta == "folder" ? "  --  " : size 
                                 color: Theme.textSecondary
                                 font.pixelSize: 12
                                 Layout.preferredWidth: 90 
                             }
-                            Text {
-                                text: path
-                                color: status == "syncing" ? Theme.auraBlue : Theme.textSecondary
-                                font.pixelSize: 12
-                                Layout.preferredWidth: 200
-                            }
                         }
-
                         // Bottom progress bar for syncing row
                         Rectangle {
                             anchors.bottom: parent.bottom
@@ -349,7 +418,7 @@ Item {
                             anchors.right: parent.right
                             height: 2; radius: 1
                             color: "#1A1D24"
-                            visible: status == "syncing"
+                            visible: status == "syncing" && meta != "folder"
 
                             Rectangle {
                                 width: parent.width * progress

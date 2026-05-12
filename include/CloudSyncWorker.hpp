@@ -14,6 +14,7 @@ class FileSystemScanner;
 class SyncWorker;
 class ReconciliationService;
 class ThreadPool;
+class SyncTree;
 struct ActivityStore;
 
 #ifdef _WIN32
@@ -30,7 +31,7 @@ public:
                            ThreadPool &uploadThreadPool,
                            ThreadPool &downloadThreadPool,
                            const std::string &syncPath,
-                           const std::string &userEmail,
+                           const std::string &userEmail, SyncTree &syncTree,
 #ifdef _WIN32
                            CloudFilesProvider *cfProvider = nullptr,
 #endif
@@ -39,6 +40,10 @@ public:
   void start();
   void stop();
   std::vector<std::string> getPathComponents(const std::string &path);
+
+  void startSync();
+  void stopSync();
+  void getQuota();
 
 private:
 #ifdef _WIN32
@@ -52,10 +57,10 @@ private:
   SyncWorker &m_syncWorker;
   ThreadPool &m_uploadThreadPool;
   ThreadPool &m_downloadThreadPool;
+  SyncTree &m_syncTree;
 
   std::string m_syncPath;
   std::string m_userEmail;
-  std::thread m_workerThread;
   std::thread m_uploadThread;
   std::thread m_downloadThread;
   std::atomic<bool> m_stopThread;
@@ -141,12 +146,15 @@ private:
   getFileDirTree(const FileQueueEntry &fq);
 
 signals:
-  void activityAdded(const std::string &key, const SyncItem &item);
+  void activityAdded(const std::string &key, const SyncItem &item,
+                     bool isDBActivity = false);
+  void isSyncing(bool isSyncing);
   void activityUpdated(const std::string &key, const SyncItem &item);
   void activityRemoved(const std::string &key);
   void syncStarted();
   void syncStopped();
   void errorOccurred(const QString &message);
+  void quotaFetched(const int64_t &quota);
 };
 
 } // namespace sync_app

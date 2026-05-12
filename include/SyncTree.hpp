@@ -1,3 +1,4 @@
+#include "types.hpp"
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -8,7 +9,12 @@ struct SyncNode : public std::enable_shared_from_this<SyncNode> {
 public:
   std::string name;
   std::string inode;
+  std::string uuid = "";
   bool isDir;
+  bool isDirty = false;
+  std::string hash = "";
+  std::string last_modified = "";
+  std::string lastSynced = "";
   std::weak_ptr<SyncNode> parent;
   std::unordered_map<std::string, std::shared_ptr<SyncNode>> children;
   SyncNode(std::string n, std::string i, bool d,
@@ -33,6 +39,8 @@ public:
   std::shared_ptr<SyncNode> findByInode(const std::string &inode);
   void insertPath(const std::string &path, const std::string &inode,
                   bool isDir);
+  void insertCloudPath(const CloudFileMetadata &cf);
+  void insertSyncedPath(const FileMetadata &f);
   void insertInode(const std::string &path, const std::string &inode,
                    bool isDir);
   void renamePath(const std::string &newPath, const std::string &oldPath);

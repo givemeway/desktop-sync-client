@@ -13,13 +13,14 @@ class ThreadPool;
 class DatabaseManager;
 class FileSystemScanner;
 class ActivityStore;
+class SyncTree;
 
 class SyncWorker : public QObject {
   Q_OBJECT
 public:
   SyncWorker(DatabaseManager &dbManager, FileSystemScanner &scanner,
              ActivityStore &activityStore, ThreadPool &threadPool,
-             const std::string &syncPath);
+             SyncTree &syncTree, const std::string &syncPath);
   ~SyncWorker();
   void handleAdded(const std::string &path);
   void handleDeleted(const std::string &path);
@@ -91,7 +92,8 @@ public:
   }
 
 signals:
-  void activityAdded(const std::string &key, const SyncItem &item);
+  void activityAdded(const std::string &key, const SyncItem &item,
+                     bool isDBActivity = false);
 
 private:
   std::function<void()> m_uploadCallback;

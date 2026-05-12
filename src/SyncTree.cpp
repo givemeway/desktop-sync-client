@@ -82,6 +82,7 @@ void SyncTree::insertPath(const std::string &path, const std::string &inode,
   current->name = name;
   current->inode = inode;
   current->isDir = isDir;
+  current->isDirty = true;
   //  m_inodeTreeMap[inode] = newNode;
 }
 
@@ -135,6 +136,7 @@ void SyncTree::renamePath(const std::string &newPath,
       std::string newname = parts.back();
       node->name = newname;
       node->parent = parent;
+      node->isDirty = true;
       parent->children[newname] = node;
     }
   }
@@ -175,6 +177,7 @@ void SyncTree::movePath(const std::string &newPath,
       if (it != oldParentNode->children.end()) {
         oldParentNode->children.erase(name);
         oldNode->parent = newParentNode;
+        oldNode->isDirty = true;
         newParentNode->children[name] = oldNode;
       }
     }

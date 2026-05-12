@@ -232,7 +232,7 @@ Item {
                                 width: 18; height: 18; radius: 3
                                 anchors.centerIn: parent
                                 color: "transparent"
-                                border.color: Theme.glassBorder
+                                border.color: Theme.textSecondary
                                 border.width: 1
 
                                 Rectangle {
@@ -322,7 +322,7 @@ Item {
                     delegate: Rectangle {
                         id: row
                         width: ListView.view.width
-                        height: 50
+                        height: 75
 
                         // isSelected comes from ExplorerModel's IsSelectedRole
                         color: isSelected ? "#0F1E35" :
@@ -376,15 +376,15 @@ Item {
                                     width: 18; height: 18; radius: 3
                                     anchors.centerIn: parent
                                     color: isSelected ? Theme.auraBlue : "transparent"
-                                    border.color: isSelected ? Theme.auraBlue : Theme.glassBorder
+                                    border.color: isSelected ? Theme.auraBlue : Theme.textSecondary
                                     border.width: 1
-                                    opacity: row.hovered || isSelected ? 1.0 : 0.4
+                                    //opacity: row.hovered || isSelected ? 1.0 : 0.5
                                     Behavior on opacity { NumberAnimation { duration: 120 } }
 
                                     Text {
                                         anchors.centerIn: parent
                                         text: "\uf00c"
-                                        font.family: "Font Awesome 6 Free"
+                                        font.family: "Font Awesome 7 Free"
                                         font.weight: Font.Black
                                         font.pixelSize: 10
                                         color: "white"
@@ -405,25 +405,21 @@ Item {
 
                             // File icon + name
                             Row {
-                                spacing: 12
+                                spacing: 2
                                 Layout.fillWidth: true
                                 Layout.alignment: Qt.AlignVCenter
 
                                 Rectangle {
-                                    width: 32; height: 32; radius: 6
-                                    color: Qt.rgba(
-                                        parseInt(explorerRoot.fileIconColor(name, type === "folder").slice(1,3), 16)/255,
-                                        parseInt(explorerRoot.fileIconColor(name, type === "folder").slice(3,5), 16)/255,
-                                        parseInt(explorerRoot.fileIconColor(name, type === "folder").slice(5,7), 16)/255,
-                                        0.15)
+                                    width: 50; height: 50; radius: 6
+                                    color: "transparent"
                                     anchors.verticalCenter: parent.verticalCenter
 
                                     Text {
                                         anchors.centerIn: parent
                                         text: explorerRoot.fileIcon(name, type === "folder")
-                                        font.family: "Font Awesome 6 Free"
+                                        font.family: "Font Awesome 7 Free"
                                         font.weight: Font.Black
-                                        font.pixelSize: 15
+                                        font.pixelSize: 36
                                         color: explorerRoot.fileIconColor(name, type === "folder")
                                     }
                                 }

@@ -2,13 +2,23 @@
 #include "ActivityModel.hpp"
 #include "CloudBackupManager.hpp"
 #include "CloudSyncWorker.hpp"
+#include "DatabaseManager.hpp"
 #include "ExplorerModel.hpp"
 #include "SyncWorker.hpp"
+#include "Utility.hpp"
 #include "qobject.h"
 #include "types.hpp"
 #include <QDebug>
 #include <QString>
 #include <QVariantList>
+#include <chrono>
+#include <cstdint>
+#include <iomanip>
+#include <iostream>
+#include <mutex>
+#include <sstream>
+#include <string>
+#include <thread>
 
 namespace sync_app {
 
@@ -17,13 +27,14 @@ SyncController *SyncController::m_instance = nullptr;
 SyncController::SyncController(CloudSyncWorker *syncEngine,
                                SyncWorker *syncWorker,
                                CloudBackupManager *backupManager,
-                               QObject *parent)
-    : QObject(parent), m_cloudSyncWorker(syncEngine), m_syncWorker(syncWorker),
-      m_backupManager(backupManager) {
+                               DatabaseManager *dbManager,
+                               const std::string &syncPath, QObject *parent)
+    : m_cloudSyncWorker(syncEngine), m_syncWorker(syncWorker),
+      m_backupManager(backupManager), m_dbManager(dbManager),
+      m_syncPath(QString::fromStdString(syncPath)), QObject(parent) {
 
   m_activityModel = new ActivityModel(this);
   m_explorerModel = new ExplorerModel(this);
-
   // ── CloudSyncWorker → ActivityModel ───────────────────────────────────────
   connect(m_cloudSyncWorker, &CloudSyncWorker::activityUpdated, m_activityModel,
           &ActivityModel::onActivityUpdated);
@@ -37,6 +48,15 @@ SyncController::SyncController(CloudSyncWorker *syncEngine,
   connect(m_syncWorker, &SyncWorker::activityAdded, m_activityModel,
           &ActivityModel::onActivityAdded);
 
+  connect(m_cloudSyncWorker, &CloudSyncWorker::quotaFetched, this,
+          &SyncController::onQuotaFetched);
+
+  connect(m_cloudSyncWorker, &CloudSyncWorker::isSyncing, this,
+          [&](bool isSyncing) {
+            m_isSyncing = isSyncing;
+            emit isSyncingChanged();
+          });
+
   // ── CloudSyncWorker → SyncController sync state ───────────────────────────
   connect(m_cloudSyncWorker, &CloudSyncWorker::syncStarted, this,
           &SyncController::onSyncStarted);
@@ -47,6 +67,11 @@ SyncController::SyncController(CloudSyncWorker *syncEngine,
   connect(m_cloudSyncWorker, &CloudSyncWorker::errorOccurred, this,
           &SyncController::onErrorOccurred);
 
+  connect(m_activityModel, &ActivityModel::filesSyncingChanged, this,
+          [&](int64_t fileSyncing) {
+            m_filesSyncing = fileSyncing;
+            emit filesSyncingChanged();
+          });
   // ── CloudBackupManager → ExplorerModel ────────────────────────────────────
   // Qt::QueuedConnection is required here because these signals fire from a
   // background QRunnable thread. QueuedConnection posts the slot call as an
@@ -133,12 +158,29 @@ void SyncController::onErrorOccurred(const QString &message) {
   emit showError(message);
 }
 
+void SyncController::onQuotaFetched(const int64_t &usage) {
+  m_storageUsed = QString::fromStdString(Utility::formatFileSize(usage));
+  auto usagePercentage =
+      (static_cast<float>(usage) / static_cast<float>(m_quotaBytes));
+  std::stringstream ss;
+  ss << std::fixed << std::setprecision(2) << usagePercentage;
+  m_usagePercentage = usagePercentage;
+  emit quotaChanged();
+  emit usagePercentageChanged();
+  emit storageUsedChanged();
+}
+
 // ── Sync invokables
 // ───────────────────────────────────────────────────────────
 
-void SyncController::startSync() {}
+void SyncController::startSync() { m_cloudSyncWorker->startSync(); }
 
-void SyncController::pauseSync() {}
+void SyncController::pauseSync() { m_cloudSyncWorker->stopSync(); }
+
+void SyncController::setSyncFolder(const QString &syncPath) {
+  m_syncPath = syncPath;
+  emit syncFolderChanged();
+}
 
 void SyncController::uploadFile(const QString &path) { Q_UNUSED(path) }
 
@@ -213,6 +255,42 @@ void SyncController::selectAll() { m_explorerModel->selectAll(); }
 
 QStringList SyncController::selectedIds() const {
   return m_explorerModel->selectedIds();
+}
+
+void SyncController::populateActivity() {
+  std::lock_guard<std::recursive_mutex> lock(m_dbManager->getSyncMutex());
+  auto activities = m_dbManager->getAllActivities();
+  if (activities.has_value()) {
+    m_activityModel->loadActivities(activities.value());
+  }
+}
+
+void SyncController::workerLoop() {
+  while (!m_stopThread) {
+    if (m_stopThread)
+      break;
+    std::cout << "[synccontroller] cleaning up activity DB.." << std::endl;
+    {
+      std::lock_guard<std::recursive_mutex> lock(m_dbManager->getSyncMutex());
+      m_dbManager->cleanupActivities();
+    }
+    populateActivity();
+    // clean up DB after all the files are synced to cloud .
+    for (int i = 0; i < 30 && !m_stopThread; ++i) {
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+  }
+}
+void SyncController::start() {
+  m_stopThread = false;
+  m_timerThread = std::thread(&SyncController::workerLoop, this);
+}
+void SyncController::stop() {
+  m_stopThread = true;
+  m_cv.notify_all();
+  if (m_timerThread.joinable()) {
+    m_timerThread.join();
+  }
 }
 
 } // namespace sync_app

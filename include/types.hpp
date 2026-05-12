@@ -80,6 +80,17 @@ struct ScanResult {
   std::vector<ScannedDirectory> directories;
 };
 
+struct ActivityMetadata {
+  std::string name = "";
+  std::string absPath = "";
+  std::string path = "";
+  std::string meta = "file";
+  std::string uuid = "";
+  std::string lastUpdated = "";
+  std::string size = "0 B";
+  std::string event = "added";
+};
+
 struct FileMetadata {
   std::string uuid = "";
   std::string path = "";
@@ -280,6 +291,7 @@ struct SyncItem {
   bool isActive = false; // replaces isDownloading/isUploading
   bool isDone = false;   // replaces isDownloaded/isUploaded
   bool isError = false;  //
+  std::string lastUpdated = "";
 };
 
 struct ActivityItem {
@@ -292,6 +304,7 @@ struct ActivityItem {
   QString status; // queued or done or error or syncing
   double progress = 0.0;
   QString size = "0B";
+  QString lastUpdated = "";
 };
 
 struct ExplorerItem {
@@ -311,6 +324,41 @@ struct CloudFolderBrowseMetadata {
   size_t total = 0;
 };
 
+static std::string formatFileSize(int64_t bytes) {
+  enum class SizeUnits : int64_t {
+    KB = 1024LL,
+    MB = KB * 1000LL,
+    GB = MB * 1000LL,
+    TB = GB * 1000LL,
+    PB = TB * 1000LL,
+  };
+  double size;
+  std::string unit;
+
+  if (bytes >= static_cast<int64_t>(SizeUnits::PB)) {
+    size = (double)bytes / static_cast<int64_t>(SizeUnits::PB);
+    unit = "PB";
+  } else if (bytes >= static_cast<int64_t>(SizeUnits::TB)) {
+    size = (double)bytes / static_cast<int64_t>(SizeUnits::TB);
+    unit = "TB";
+  } else if (bytes >= static_cast<int64_t>(SizeUnits::GB)) {
+    size = (double)bytes / static_cast<int64_t>(SizeUnits::GB);
+    unit = "GB";
+  } else if (bytes >= static_cast<int64_t>(SizeUnits::MB)) {
+    size = (double)bytes / static_cast<int64_t>(SizeUnits::MB);
+    unit = "MB";
+  } else if (bytes >= static_cast<int64_t>(SizeUnits::KB)) {
+    size = (double)bytes / static_cast<int64_t>(SizeUnits::KB);
+    unit = "KB";
+  } else {
+    return std::to_string(bytes) + " B";
+  }
+
+  // ── Format to 2 decimal places ────────────────────────────────
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(2) << size << " " << unit;
+  return oss.str();
+}
 inline void from_json(const nlohmann::json &j, CloudFileMetadata &f) {
   f.uuid = j.value("uuid", "");
   f.dirID = j.value("dirID", "");
@@ -340,7 +388,8 @@ inline void from_json(const nlohmann::json &j, ExplorerItem &e) {
   e.lastModified = QString::fromStdString(j.value("modified", ""));
   e.name = QString::fromStdString(j.value("name", ""));
   e.type = QString::fromStdString(j.value("type", "file"));
-  e.size = QString::number(j.value("size", 0));
+  auto size = j.value("size", 0);
+  //  e.size = QString::number(j.value("size", 0));
   e.versions = QString::number(j.value("versions", 1));
   std::string type = j.value("type", "file");
   std::string path = j.value("directory", "/");
@@ -354,6 +403,8 @@ inline void from_json(const nlohmann::json &j, ExplorerItem &e) {
     } else {
       path = "/" + device + "/" + directory;
     }
+    std::string formattedSize = formatFileSize(size);
+    e.size = QString::fromStdString(formattedSize);
   }
   e.path = QString::fromStdString(path);
 }

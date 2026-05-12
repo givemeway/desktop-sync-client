@@ -176,6 +176,27 @@ ApiClient::getDirIDs(const std::vector<CloudFileMetadata> &cloudFiles,
   return {cf, cd};
 }
 
+std::optional<size_t> ApiClient::getQuotaUsage() {
+  std::string path =
+      "/app/sync/getQuotaUsage?username=" + urlEncode(m_userEmail);
+  auto res = m_impl->client.Get(path.c_str());
+  std::cout << "[API] url ->" << path << "\n";
+  if (res && res->status == 200) {
+    auto data = json::parse(res->body);
+    if (data.is_object() && data.contains("size") && data["size"].is_number()) {
+      auto size = data["size"];
+      std::cout << "[API] Quota Size: " << size << std::endl;
+      return size;
+    } else {
+      std::cerr << "[API] Parsing Error" << std::endl;
+      return std::nullopt;
+    }
+  } else {
+    std::cerr << "[API] Request failed -> " << res.error() << "\n";
+    return std::nullopt;
+  }
+}
+
 std::optional<CloudMetadataResult> ApiClient::getMetadata() {
   std::string path =
       "/app/sync/getSyncItems?username=" + urlEncode(m_userEmail);
@@ -618,7 +639,9 @@ bool ApiClient::deleteFolder(const DirectoryQueueEntry &dir) {
                       "&folder=" + urlEncode(dir.folder) +
                       "&directory=" + urlEncode(parts.directory) +
                       "&username=" + urlEncode(m_userEmail) +
-                      "&device=" + urlEncode(dir.device);
+                      "&device=" + urlEncode(dir.device) +
+                      "&uuid=" + urlEncode(dir.uuid);
+
   auto res = m_impl->client.Delete(query.c_str());
   return res && res->status == 200;
 }

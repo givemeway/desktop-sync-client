@@ -30,6 +30,7 @@ std::atomic<bool> running{true};
 std::mutex cv_m;
 std::condition_variable cv;
 const std::string dbPath = "sync_client.db";
+const std::string activityDBpath = "sync_activity.db";
 #ifdef _WIN32
 const std::string syncFolder = "C:/Users/Sandeep Kumar/Desktop/My QDrive";
 #else
@@ -66,7 +67,7 @@ int main(int argc, char *argv[]) {
     }
 
     // 1. Initialize Components
-    sync_app::DatabaseManager dbManager(dbPath, syncFolder);
+    sync_app::DatabaseManager dbManager(dbPath, activityDBpath, syncFolder);
     sync_app::ThreadPool hashPool(8);
     sync_app::ThreadPool scanHashPool(8);
     sync_app::ThreadPool uploadPool(4);
@@ -79,7 +80,7 @@ int main(int argc, char *argv[]) {
     sync_app::ActivityStore activityStore;
 
     sync_app::SyncWorker syncworker(dbManager, scanner, activityStore, hashPool,
-                                    syncFolder);
+                                    syncTree, syncFolder);
 
     sync_app::CloudFilesProvider cfProvider(apiClient, dbManager, syncworker,
                                             activityStore, syncFolder,
@@ -89,12 +90,15 @@ int main(int argc, char *argv[]) {
     sync_app::CloudSyncWorker cloudSync(
         dbManager, apiClient, reconciliationService, scanner, syncworker,
         activityStore, uploadPool, downloadPool, syncFolder, userEmail,
-        &cfProvider);
+        syncTree, &cfProvider);
 
-    sync_app::SyncController::initialize(&cloudSync, &syncworker, &cloudBackup);
+    sync_app::SyncController::initialize(&cloudSync, &syncworker, &cloudBackup,
+                                         &dbManager, syncFolder);
 
-    engine.rootContext()->setContextProperty(
-        "syncController", sync_app::SyncController::instance());
+    auto syncControllerInstance = sync_app::SyncController::instance();
+
+    engine.rootContext()->setContextProperty("syncController",
+                                             syncControllerInstance);
 
     engine.addImportPath("qrc:/");
     const QUrl url(QStringLiteral("qrc:/main.qml"));
@@ -152,6 +156,8 @@ int main(int argc, char *argv[]) {
             });
         watcher.start();
         cloudSync.start();
+        syncControllerInstance->populateActivity();
+        syncControllerInstance->start();
 
         std::cout << "[Main] Sync engine active and monitoring: " << syncFolder
                   << std::endl;

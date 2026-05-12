@@ -1,12 +1,14 @@
 #include "DatabaseManager.hpp"
 #include "Utility.hpp"
 #include "types.hpp"
+#include <corecrt_io.h>
 #include <filesystem>
 #include <iostream>
 #include <iterator>
 #include <mutex>
 #include <sqlite3.h>
 #include <sqlite_orm/sqlite_orm.h>
+#include <string>
 using namespace sqlite_orm;
 namespace sync_app {
 
@@ -82,28 +84,64 @@ inline auto create_storage_impl(const std::string &path) {
           make_column("lastSynced", &DirectoryQueueEntry::lastSynced),
           primary_key(&DirectoryQueueEntry::device,
                       &DirectoryQueueEntry::folder,
-                      &DirectoryQueueEntry::path)));
+                      &DirectoryQueueEntry::path)),
+      make_table<SyncItem>("Activity", make_column("name", &SyncItem::name),
+                           make_column("type", &SyncItem::type),
+                           make_column("path", &SyncItem::path),
+                           make_column("meta", &SyncItem::meta),
+                           make_column("id", &SyncItem::id, unique()),
+                           make_column("lastUpdated", &SyncItem::lastUpdated),
+                           make_column("isActive", &SyncItem::isActive),
+                           make_column("isDone", &SyncItem::isDone),
+                           make_column("isError", &SyncItem::isError),
+                           make_column("inQueue", &SyncItem::inQueue),
+                           make_column("size", &SyncItem::size),
+                           make_column("progress", &SyncItem::progress)));
+}
+
+inline auto create_activity_storage_impl(const std::string &path) {
+  return make_storage(
+      path,
+      make_table<SyncItem>("Activity", make_column("name", &SyncItem::name),
+                           make_column("type", &SyncItem::type),
+                           make_column("path", &SyncItem::path),
+                           make_column("meta", &SyncItem::meta),
+                           make_column("id", &SyncItem::id, unique()),
+                           make_column("lastUpdated", &SyncItem::lastUpdated),
+                           make_column("isActive", &SyncItem::isActive),
+                           make_column("isDone", &SyncItem::isDone),
+                           make_column("isError", &SyncItem::isError),
+                           make_column("inQueue", &SyncItem::inQueue),
+                           make_column("size", &SyncItem::size),
+                           make_column("progress", &SyncItem::progress)));
 }
 
 // Typedef for easier access within the Impl
 using Storage = decltype(create_storage_impl(""));
+using ActivityStorage = decltype(create_activity_storage_impl(""));
 
 struct DatabaseManager::Impl {
   Storage storage;
-  Impl(const std::string &path) : storage(create_storage_impl(path)) {}
+  ActivityStorage activityStorage;
+  Impl(const std::string &path, const std::string &activityDBPath)
+      : storage(create_storage_impl(path)),
+        activityStorage(create_activity_storage_impl(activityDBPath)) {}
 };
 
 DatabaseManager::DatabaseManager(const std::string &dbPath,
+                                 const std::string &activityDBPath,
                                  const std::string &syncPath)
-    : m_dbPath(dbPath), m_syncPath(syncPath),
-      m_impl(std::make_unique<Impl>(dbPath)) {}
+    : m_dbPath(dbPath), m_activityDBPath(activityDBPath), m_syncPath(syncPath),
+      m_impl(std::make_unique<Impl>(dbPath, activityDBPath)) {}
 
 DatabaseManager::~DatabaseManager() = default;
-
 bool DatabaseManager::open() {
   try {
     m_impl->storage.get_all<FileMetadata>(limit(1));
+    m_impl->activityStorage.get_all<SyncItem>(limit(1));
     std::cout << "[DB] Database connection verified: " << m_dbPath << std::endl;
+    std::cout << "[DB] Database connection verified: " << m_activityDBPath
+              << std::endl;
     return true;
   } catch (const std::exception &e) {
     std::cout << "[DB] Note: Initial connection: " << e.what() << std::endl;
@@ -117,6 +155,7 @@ void DatabaseManager::initializeSchema() {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   std::cout << "[DB] Synchronizing schema via sqlite_orm..." << std::endl;
   m_impl->storage.sync_schema();
+  m_impl->activityStorage.sync_schema();
   std::cout << "[DB] Schema synchronized successfully." << std::endl;
 }
 
@@ -141,6 +180,124 @@ pathParts DatabaseManager::getFolderDevice(const std::filesystem::path &path) {
   }
   return parts;
 }
+
+// activity operations ------------------
+//
+bool DatabaseManager::insertActivity(const SyncItem &activity) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  return m_impl->activityStorage.transaction([&]() {
+    try {
+      m_impl->activityStorage.replace<SyncItem>(activity);
+      return true;
+    } catch (const std::exception &e) {
+      std::cout << "[DB] error inserting Activity: " << e.what();
+      return false;
+    }
+  });
+}
+bool DatabaseManager::updateActivity(const SyncItem &activity,
+                                     const std::string &uuid) {
+
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  return m_impl->activityStorage.transaction([&]() {
+    try {
+      m_impl->activityStorage.replace<SyncItem>(activity);
+      return true;
+    } catch (const std::exception &e) {
+      std::cout << "[DB] error updating Activity: " << e.what();
+      return false;
+    }
+  });
+}
+bool DatabaseManager::removeActivity(const std::string &uuid) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  return m_impl->activityStorage.transaction([&]() {
+    try {
+      m_impl->activityStorage.remove<SyncItem>(uuid);
+      return true;
+    } catch (const std::exception &e) {
+      std::cout << "[DB] error deleting Activity: " << e.what();
+      return false;
+    }
+  });
+}
+
+void DatabaseManager::cleanupActivities() {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  try {
+
+    auto items = m_impl->activityStorage.get_all<SyncItem>();
+    std::map<std::string, std::vector<SyncItem>> items_map;
+    for (const auto &item : items) {
+      std::string path = "";
+      if (item.meta != "folder") {
+        path = std::filesystem::path(item.path).parent_path().generic_string();
+      } else {
+        path = item.path;
+      }
+      items_map[path].push_back(item);
+    }
+    std::sort(items.begin(), items.end(),
+              [&](const auto &a, const auto &b) { return a.path < b.path; });
+
+    for (auto it = items.begin(); it != items.end();) {
+      std::string path = "";
+      if (it->meta != "folder") {
+        path = std::filesystem::path(it->path).parent_path().generic_string();
+      } else {
+        path = it->path;
+      }
+      auto it_map = items_map.find(path);
+      if (it_map == items_map.end()) {
+        it = items.erase(it);
+        continue;
+      }
+      if (it->meta == "folder") {
+        auto children = m_impl->activityStorage.get_all<SyncItem>(
+            where(like(&SyncItem::path, path + "/%") &&
+                  c(&SyncItem::isDone) == true),
+            order_by(&SyncItem::path));
+        auto excluded = m_impl->activityStorage.get_all<SyncItem>(
+            where(like(&SyncItem::path, path + "/%") &&
+                  (c(&SyncItem::inQueue) == true ||
+                   c(&SyncItem::isError) == true)),
+            order_by(&SyncItem::path));
+        if (children.size() > 0) {
+          for (const auto &child : children) {
+            m_impl->activityStorage.remove_all<SyncItem>(
+                where(c(&SyncItem::id) == child.id));
+          }
+        }
+        items_map.erase(path);
+        auto pos = std::distance(items.begin(), it);
+        items_map[path].push_back(items.at(pos));
+        if (excluded.size() > 0) {
+          for (const auto &ex : excluded) {
+            items_map[path].push_back(ex);
+          }
+        }
+      }
+      it = items.erase(it);
+    }
+    std::cout << "[DB] Cleanup Complete: " << std::endl;
+  } catch (const std::exception &e) {
+    std::cerr << "[DB] unable to clean up the activity : " << e.what()
+              << std::endl;
+  }
+}
+
+std::optional<std::vector<SyncItem>> DatabaseManager::getAllActivities() {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  std::optional<std::vector<SyncItem>> activities;
+  try {
+    return m_impl->activityStorage.get_all<SyncItem>();
+  } catch (const std::exception &e) {
+    std::cout << "[DB] error deleting Activity: " << e.what();
+    return std::nullopt;
+  }
+}
+
+// ------------------------------
 
 // File operations
 std::optional<std::vector<FileMetadata>> DatabaseManager::getAllFiles() {
@@ -1236,6 +1393,7 @@ bool DatabaseManager::moveDirectory(const std::string &path,
         d.path = newPath;
         d.folder = p.folder;
         d.device = p.device;
+        d.lastSynced = std::to_string(Utility::getCurrentTime());
         if (dirFiles.size() > 0) {
           // update the files
           for (auto &file : dirFiles) {
@@ -1405,6 +1563,12 @@ bool DatabaseManager::deleteFileQueue(const std::string &path,
                                       const std::string &filename) {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
   try {
+    m_impl->storage.update_all(
+        set(c(&FileMetadata::lastSynced) =
+                std::to_string(Utility::getCurrentTime())),
+        where(c(&FileMetadata::path) == path &&
+              c(&FileMetadata::filename) == filename));
+
     m_impl->storage.remove<FileQueueEntry>(path, filename);
     auto dirFiles = m_impl->storage.get_all<FileQueueEntry>(
         where(c(&FileQueueEntry::path) == path) ||
@@ -1575,6 +1739,13 @@ bool DatabaseManager::deleteDirectoryQueue(const std::string &device,
           where(c(&FileQueueEntry::path) == path ||
                 like(&FileQueueEntry::path, path + "/%")));
       if (qFiles.size() == 0) {
+        m_impl->storage.update_all(
+            set(c(&DirectoryMetadata::lastSynced) =
+                    std::to_string(Utility::getCurrentTime())),
+            where(c(&DirectoryMetadata::path) == path &&
+                  c(&DirectoryMetadata::device) == device &&
+                  c(&DirectoryMetadata::folder) == folder));
+
         m_impl->storage.remove<DirectoryQueueEntry>(device, folder, path);
       } else {
         m_impl->storage.update_all(

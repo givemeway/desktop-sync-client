@@ -10,7 +10,7 @@ Item {
     // In your C++ backend expose these as Q_PROPERTYs and set via context property
     // e.g.  engine.rootContext()->setContextProperty("SyncController", &ctrl);
     // Then replace the local properties below with SyncController.syncRunning etc.
-    property bool   syncRunning:  false
+    //property bool   syncRunning:  false
     property string syncFolder:   Qt.resolvedUrl("~/Documents/AuraSync")
     property int    uploadSpeed:  0     // KB/s — feed from backend
     property int    downloadSpeed: 0    // KB/s — feed from backend
@@ -42,8 +42,7 @@ Item {
             width: parent.width
             title: "Sync Control"
             iconCode: FA.arrowsRotate
-            iconColor: root.syncRunning ? Theme.auraCyan : Theme.textSecondary
-
+            iconColor: syncController.isSyncing ? Theme.auraCyan : Theme.textSecondary
             content: Column {
                 spacing: 16
                 width: parent.width
@@ -57,10 +56,9 @@ Item {
                     Rectangle {
                         width: 10; height: 10; radius: 5
                         anchors.verticalCenter: parent.verticalCenter
-                        color: root.syncRunning ? Theme.successGreen : "#555"
-
+                        color: syncController.isSyncing ? Theme.successGreen : "#555"
                         SequentialAnimation on opacity {
-                            running: root.syncRunning
+                            running: syncController.isSyncing
                             loops: Animation.Infinite
                             NumberAnimation { to: 0.3; duration: 700 }
                             NumberAnimation { to: 1.0; duration: 700 }
@@ -68,8 +66,8 @@ Item {
                     }
 
                     Text {
-                        text: root.syncRunning ? "Sync is running" : "Sync is stopped"
-                        color: root.syncRunning ? Theme.successGreen : Theme.textSecondary
+                        text: syncController.isSyncing ? "Sync is running" : "Sync is stopped"
+                        color: syncController.isSyncing ? Theme.successGreen : Theme.textSecondary
                         font.pixelSize: 14
                         anchors.verticalCenter: parent.verticalCenter
                     }
@@ -79,7 +77,7 @@ Item {
                     // Speed badges (visible while syncing)
                     Row {
                         spacing: 8
-                        visible: root.syncRunning
+                        visible: syncController.isSyncing
                         anchors.verticalCenter: parent.verticalCenter
 
                         SpeedBadge { icon: FA.cloudArrowUp;   color: Theme.auraCyan;  value: root.uploadSpeed }
@@ -94,12 +92,13 @@ Item {
                         orientation: Gradient.Horizontal
                         GradientStop {
                             position: 0
-                            color: root.syncRunning ? Theme.errorRed : Theme.auraCyan
+                            color: syncController.isSyncing ? Theme.errorRed : Theme.auraCyan
                             Behavior on color { ColorAnimation { duration: 250 } }
                         }
                         GradientStop {
                             position: 1
-                            color: root.syncRunning ? "#AA2020" : Theme.auraBlue
+                            color: syncController.isSyncing ? "#AA2020" : Theme.auraBlue
+
                             Behavior on color { ColorAnimation { duration: 250 } }
                         }
                     }
@@ -112,14 +111,16 @@ Item {
                         anchors.centerIn: parent
                         spacing: 10
                         Text {
-                            text: root.syncRunning ? FA.stop : FA.play
+                            text: syncController.isSyncing ? FA.stop : FA.play
+
                             font.family: FA.solid
                             font.pixelSize: 14
                             color: "white"
                             anchors.verticalCenter: parent.verticalCenter
                         }
                         Text {
-                            text: root.syncRunning ? "Stop Sync" : "Start Sync"
+                            text: syncController.isSyncing ? "Stop Sync" : "Start Sync"
+
                             font.pixelSize: 14
                             font.weight: Font.Medium
                             color: "white"
@@ -132,7 +133,12 @@ Item {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            root.syncRunning = !root.syncRunning
+                            if(syncController.isSyncing){
+                              syncController.pauseSync();
+                            }
+                            else{
+                              syncController.startSync(); 
+                            }
                             // call your backend: SyncController.setRunning(root.syncRunning)
                         }
                     }
@@ -185,7 +191,8 @@ Item {
                             }
 
                             Text {
-                                text: root.syncFolder
+                                //text: root.syncFolder
+                                text: syncController.syncPath
                                 font.pixelSize: 13
                                 color: Theme.textPrimary
                                 anchors.verticalCenter: parent.verticalCenter
@@ -233,7 +240,7 @@ Item {
                 // Warn if sync is running when folder is changed
                 Row {
                     spacing: 6
-                    visible: root.syncRunning
+                    visible: syncController.isSyncing
                     Text {
                         text: FA.triangleExclaim
                         font.family: FA.solid
@@ -323,8 +330,9 @@ Item {
         id: folderDialog
         title: "Choose Sync Folder"
         onAccepted: {
-            root.syncFolder = selectedFolder
-            // SyncController.setSyncFolder(selectedFolder)
+            //root.syncFolder = selectedFolder
+            syncController.setSyncFolder(selectedFolder)
+
         }
     }
 
@@ -369,7 +377,7 @@ Item {
                         anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             signOutDialog.close()
-                            root.syncRunning = false
+                            syncController.pauseSync()
                             // emit signal / call SyncController.signOut()
                         }
                     }
