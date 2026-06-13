@@ -4,13 +4,15 @@
       "name": "x64-Debug",
       "generator": "Ninja",
       "configurationType": "Debug",
-      "inheritEnvironments": [ "msvc_x64_x64" ],
+      "inheritEnvironments": [
+        "msvc_x64_x64"
+      ],
       "buildRoot": "${projectDir}\\out\\build\\${name}",
       "installRoot": "${projectDir}\\out\\install\\${name}",
       "cmakeCommandArgs": "",
       "buildCommandArgs": "",
       "ctestCommandArgs": "",
-      "cmakeToolchain": "F:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "cmakeToolchain": "C:/users/sandk/Desktop/vckg/scripts/buildsystems/vcpkg.cmake",
       "variables": [
         {
           "name": "VCPKG_TARGET_TRIPLET",
@@ -19,12 +21,12 @@
         },
         {
           "name": "Qt6_DIR",
-          "value": "F:/Qt/6.10.2/msvc2022_64/lib/cmake/Qt6",
+          "value": "C:/Qt/6.10.3/msvc2022_64/lib/cmake/Qt6",
           "type": "PATH"
         },
         {
           "name": "WINDEPLOYQT_EXECUTABLE",
-          "value": "F:/Qt/6.10.2/msvc2022_64/bin/windeployqt.exe",
+          "value": "C:/Qt/6.10.3/msvc2022_64/bin/windeployqt.exe",
           "type": "FILEPATH"
         }
       ]

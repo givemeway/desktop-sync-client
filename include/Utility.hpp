@@ -515,7 +515,8 @@ public:
         return true;
       if (!b.priority.has_value())
         return false;
-      return a.priority > b.priority;
+      //      return a.priority > b.priority;
+      return a.priority < b.priority;
     }
   };
 

@@ -176,9 +176,11 @@ void CloudSyncWorker::removeActivity(const std::string &key) {
   emit activityRemoved(key);
 }
 
-static void handleModifiedConflict(FileQueueEntry &cf, FileQueueEntry &lf,
-                                   std::vector<FileQueueEntry> &filesInConflict,
-                                   SyncStatus &localStatus) {
+static void handleModifiedConflict(
+    FileQueueEntry &cf, FileQueueEntry &lf,
+    std::map<std::string, std::map<std::string, std::vector<FileQueueEntry>>>
+        &filesInConflict,
+    SyncStatus &localStatus) {
   switch (localStatus) {
   case SyncStatus::RENAME:
     // download the modified cloud file
@@ -189,8 +191,8 @@ static void handleModifiedConflict(FileQueueEntry &cf, FileQueueEntry &lf,
     lf.sync_status = syncStatusToString(SyncStatus::CONFLICT);
     lf.uuid = lf.origin = UuidUtils::generate();
 
-    filesInConflict.push_back(cf);
-    filesInConflict.push_back(lf);
+    filesInConflict[cf.uuid]["cloud"].push_back(cf);
+    filesInConflict[lf.uuid]["local"].push_back(lf);
     return;
 
   case SyncStatus::MODIFIED:
@@ -202,9 +204,8 @@ static void handleModifiedConflict(FileQueueEntry &cf, FileQueueEntry &lf,
     lf.sync_status = syncStatusToString(SyncStatus::CONFLICT);
     lf.uuid = lf.origin = UuidUtils::generate();
 
-    filesInConflict.push_back(cf);
-    filesInConflict.push_back(lf);
-
+    filesInConflict[cf.uuid]["cloud"].push_back(cf);
+    filesInConflict[lf.uuid]["local"].push_back(lf);
     return;
 
   case SyncStatus::DELETE:
@@ -212,7 +213,7 @@ static void handleModifiedConflict(FileQueueEntry &cf, FileQueueEntry &lf,
     lf.priority = qPriorityToInt(QPriority::FILE_DELETE);
     lf.sync_status = syncStatusToString(SyncStatus::DELETE);
 
-    filesInConflict.push_back(lf);
+    filesInConflict[lf.uuid]["local"].push_back(lf);
 
     return;
 
@@ -225,8 +226,8 @@ static void handleModifiedConflict(FileQueueEntry &cf, FileQueueEntry &lf,
     lf.sync_status = syncStatusToString(SyncStatus::CONFLICT);
     lf.uuid = lf.origin = UuidUtils::generate();
 
-    filesInConflict.push_back(cf);
-    filesInConflict.push_back(lf);
+    filesInConflict[cf.uuid]["cloud"].push_back(cf);
+    filesInConflict[lf.uuid]["local"].push_back(lf);
 
     return;
 
@@ -236,9 +237,11 @@ static void handleModifiedConflict(FileQueueEntry &cf, FileQueueEntry &lf,
   }
 }
 
-static void handleRenameConflict(FileQueueEntry &cf, FileQueueEntry &lf,
-                                 std::vector<FileQueueEntry> &filesInConflict,
-                                 const SyncStatus &localStatus) {
+static void handleRenameConflict(
+    FileQueueEntry &cf, FileQueueEntry &lf,
+    std::map<std::string, std::map<std::string, std::vector<FileQueueEntry>>>
+        &filesInConflict,
+    const SyncStatus &localStatus) {
   switch (localStatus) {
   case SyncStatus::RENAME:
     if (cf.hashvalue == lf.hashvalue) {
@@ -256,8 +259,8 @@ static void handleRenameConflict(FileQueueEntry &cf, FileQueueEntry &lf,
     lf.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
     lf.uuid = lf.origin = UuidUtils::generate();
 
-    filesInConflict.push_back(cf);
-    filesInConflict.push_back(lf);
+    filesInConflict[cf.uuid]["cloud"].push_back(cf);
+    filesInConflict[lf.uuid]["local"].push_back(lf);
 
     return;
 
@@ -269,8 +272,9 @@ static void handleRenameConflict(FileQueueEntry &cf, FileQueueEntry &lf,
     lf.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
     lf.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
     lf.uuid = lf.origin = UuidUtils::generate();
-    filesInConflict.push_back(cf);
-    filesInConflict.push_back(lf);
+
+    filesInConflict[cf.uuid]["cloud"].push_back(cf);
+    filesInConflict[lf.uuid]["local"].push_back(lf);
 
     return;
   case SyncStatus::DELETE:
@@ -278,7 +282,7 @@ static void handleRenameConflict(FileQueueEntry &cf, FileQueueEntry &lf,
     lf.priority = qPriorityToInt(QPriority::FILE_DELETE);
     lf.sync_status = syncStatusToString(SyncStatus::DELETE);
 
-    filesInConflict.push_back(lf);
+    filesInConflict[lf.uuid]["local"].push_back(lf);
 
     return;
   case SyncStatus::MOVED:
@@ -295,17 +299,19 @@ static void handleRenameConflict(FileQueueEntry &cf, FileQueueEntry &lf,
     lf.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
     lf.uuid = lf.origin = UuidUtils::generate();
 
-    filesInConflict.push_back(cf);
-    filesInConflict.push_back(lf);
+    filesInConflict[cf.uuid]["cloud"].push_back(cf);
+    filesInConflict[lf.uuid]["local"].push_back(lf);
 
     return;
   default:
     return;
   }
 }
-static void handleMoveConflict(FileQueueEntry &cf, FileQueueEntry &lf,
-                               std::vector<FileQueueEntry> &filesInConflict,
-                               const SyncStatus &localStatus) {
+static void handleMoveConflict(
+    FileQueueEntry &cf, FileQueueEntry &lf,
+    std::map<std::string, std::map<std::string, std::vector<FileQueueEntry>>>
+        &filesInConflict,
+    const SyncStatus &localStatus) {
   switch (localStatus) {
   case SyncStatus::RENAME:
     if (cf.hashvalue == lf.hashvalue) {
@@ -321,8 +327,8 @@ static void handleMoveConflict(FileQueueEntry &cf, FileQueueEntry &lf,
     lf.sync_status = syncStatusToString(SyncStatus::CONFLICT_MOVE);
     lf.uuid = lf.origin = UuidUtils::generate();
 
-    filesInConflict.push_back(cf);
-    filesInConflict.push_back(lf);
+    filesInConflict[cf.uuid]["cloud"].push_back(cf);
+    filesInConflict[lf.uuid]["local"].push_back(lf);
 
     return;
   case SyncStatus::MODIFIED:
@@ -340,7 +346,7 @@ static void handleMoveConflict(FileQueueEntry &cf, FileQueueEntry &lf,
     lf.priority = qPriorityToInt(QPriority::FILE_DELETE);
     lf.sync_status = syncStatusToString(SyncStatus::DELETE);
 
-    filesInConflict.push_back(lf);
+    filesInConflict[lf.uuid]["local"].push_back(lf);
 
     return;
   case SyncStatus::MOVED:
@@ -356,6 +362,9 @@ static void handleMoveConflict(FileQueueEntry &cf, FileQueueEntry &lf,
     lf.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
     lf.sync_status = syncStatusToString(SyncStatus::CONFLICT_MOVE);
     lf.uuid = lf.origin = UuidUtils::generate();
+
+    filesInConflict[cf.uuid]["cloud"].push_back(cf);
+    filesInConflict[lf.uuid]["local"].push_back(lf);
 
     return;
   default:
@@ -2034,7 +2043,8 @@ void CloudSyncWorker::controlThread() {
 
     std::vector<FileQueueEntry> filesToSync;
     std::vector<DirectoryQueueEntry> dirsToSync;
-    std::vector<FileQueueEntry> filesInConflict;
+    std::map<std::string, std::map<std::string, std::vector<FileQueueEntry>>>
+        filesInConflict;
     std::vector<DirectoryQueueEntry> dirsInConflict;
     std::map<std::string, std::map<std::string, std::vector<FileQueueEntry>>>
         filesToSyncMap;
@@ -2316,8 +2326,8 @@ void CloudSyncWorker::controlThread() {
           lf.sync_status = syncStatusToString(SyncStatus::CONFLICT);
           lf.uuid = lf.origin = UuidUtils::generate();
           filesToSyncPathMap.erase(path);
-          filesInConflict.push_back(cf);
-          filesInConflict.push_back(lf);
+          filesInConflict[cf.uuid]["cloud"].push_back(cf);
+          filesInConflict[cf.uuid]["local"].push_back(lf);
         }
       }
       if (itUuid == filesToSyncMap.end()) {

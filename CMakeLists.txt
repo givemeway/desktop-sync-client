@@ -230,7 +230,8 @@ if(WIN32)
 
     
     # 2. Run windeployqt for Qt dependencies
-    set(WINDEPLOYQT_EXECUTABLE "F:/Qt/6.10.2/msvc2022_64/bin/windeployqt.exe")
+    #    set(WINDEPLOYQT_EXECUTABLE "F:/Qt/6.10.2/msvc2022_64/bin/windeployqt.exe") # laptop 
+    set(WINDEPLOYQT_EXECUTABLE "C:/Qt/6.10.3/msvc2022_64/bin/windeployqt.exe")
     #get_target_property(_qt_bin_dir Qt6::Core LOCATION)
     #get_filename_component(_qt_bin_dir "${_qt_bin_dir}" DIRECTORY)
     #find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${_qt_bin_dir}")

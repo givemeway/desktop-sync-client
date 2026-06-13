@@ -500,26 +500,44 @@ inline std::string activityToString(ActivityStatus activity) {
 
 inline size_t qPriorityToInt(QPriority priority) {
   switch (priority) {
-  case QPriority::FOLDER_CREATE:
-    return 7;
-  case QPriority::FOLDER_DELETE:
+  case QPriority::FOLDER_DELETE_CLOUD:
     return 1;
-  case QPriority::FOLDER_MOVED:
+  case QPriority::FOLDER_MOVED_CLOUD:
     return 2;
-  case QPriority::FOLDER_RENAME:
+  case QPriority::FOLDER_RENAME_CLOUD:
     return 3;
-  case QPriority::FILE_RENAME:
-    return 5;
-  case QPriority::FILE_DELETE:
+  case QPriority::FILE_RENAME_CLOUD:
     return 4;
-  case QPriority::FILE_MODIFIED:
-    return 9;
-  case QPriority::FILE_MOVED:
+  case QPriority::FILE_MOVED_CLOUD:
+    return 5;
+  case QPriority::FILE_DELETE_CLOUD:
     return 6;
-  case QPriority::FILE_UPLOAD:
+  case QPriority::FOLDER_DELETE:
+    return 7;
+  case QPriority::FOLDER_MOVED:
     return 8;
-  default:
+  case QPriority::FOLDER_RENAME:
+    return 9;
+  case QPriority::FILE_DELETE:
     return 10;
+  case QPriority::FILE_RENAME:
+    return 11;
+  case QPriority::FILE_MOVED:
+    return 12;
+  case QPriority::FOLDER_CREATE_CLOUD:
+    return 13;
+  case QPriority::FILE_DOWNLOAD:
+    return 14;
+  case QPriority::FILE_MODIFIED_CLOUD:
+    return 15;
+  case QPriority::FOLDER_CREATE:
+    return 16;
+  case QPriority::FILE_UPLOAD:
+    return 17;
+  case QPriority::FILE_MODIFIED:
+    return 18;
+  default:
+    return 100;
   }
 }
 
