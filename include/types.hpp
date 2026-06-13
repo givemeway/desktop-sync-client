@@ -12,6 +12,9 @@ namespace sync_app {
 enum class SyncStatus {
   NEW,
   RENAME,
+  CONFLICT,
+  CONFLICT_MOVE,
+  CONFLICT_RENAME,
   MODIFIED,
   DELETE,
   FILE_LINKED,
@@ -22,19 +25,29 @@ enum class SyncStatus {
 
 enum class QPriority {
   FOLDER_CREATE,
+  FOLDER_CREATE_CLOUD,
   FOLDER_RENAME,
+  FOLDER_RENAME_CLOUD,
   FOLDER_MOVED,
+  FOLDER_MOVED_CLOUD,
   FOLDER_DELETE,
+  FOLDER_DELETE_CLOUD,
   FILE_MODIFIED,
+  FILE_MODIFIED_CLOUD,
   FILE_DELETE,
+  FILE_DELETE_CLOUD,
   FILE_UPLOAD,
+  FILE_DOWNLOAD,
   FILE_RENAME,
+  FILE_RENAME_CLOUD,
   FILE_MOVED,
+  FILE_MOVED_CLOUD,
   UNKNOWN
 };
 
 enum class ActivityStatus {
   QUEUED,
+  EDITED,
   DONE,
   ERROR,
   SYNCING,
@@ -109,6 +122,24 @@ struct FileMetadata {
   std::optional<bool> isCloudOnly = false;
 };
 
+struct SyncedMetadata {
+  std::string uuid = "";
+  std::string ext = "";
+  std::string parentID = "";
+  std::string name = "";
+  std::string last_modified; // Store as string for SQLite compatibility
+  std::string hashvalue = "";
+  int64_t size = 0;
+  std::string inode = "";
+  std::string absPath = "";
+  int32_t versions = 1;
+  std::string origin = "";
+  std::string lastSynced = "";
+  std::optional<bool> isCloudOnly = false;
+  bool isDir = false;
+  bool isDirty = false;
+};
+
 struct DirectoryMetadata {
   std::string uuid;
   std::string device;
@@ -118,6 +149,13 @@ struct DirectoryMetadata {
   std::string absPath;
   std::string inode;
   std::string lastSynced = "";
+};
+
+struct SyncMetadata {
+  std::string uuid = "";
+  std::string lastSynced = "";
+  std::string last_modified = "";
+  std::string hash = "";
 };
 
 struct FileQueueEntry {
@@ -141,6 +179,7 @@ struct FileQueueEntry {
   std::optional<std::string> old_filename;
   std::optional<std::map<std::string, std::string>> dirIDs;
   std::optional<bool> isCloudOnly = false;
+  std::optional<std::string> syncType = "local";
 };
 
 struct DirectoryQueueEntry {
@@ -156,6 +195,7 @@ struct DirectoryQueueEntry {
   std::optional<std::string> old_path;
   std::optional<size_t> priority;
   std::optional<std::map<std::string, std::string>> dirIDs;
+  std::optional<std::string> syncType = "local";
 };
 
 struct CloudFileMetadata {
@@ -240,6 +280,7 @@ struct OfflineReconResult {
 };
 
 struct ReconciliationResult {
+  // down sync
   std::vector<CloudFileMetadata> filesToDownload;
   std::vector<FileMetadata> filesToDeleteLocal;
   std::vector<LocalFolderCreateMetadata> foldersToCreateLocal;
@@ -249,6 +290,9 @@ struct ReconciliationResult {
   std::vector<LocalFileRenameMetadata> filesToRename;
   std::vector<FileQueueEntry> filesToMove;
   std::vector<DirectoryQueueEntry> dirsToMove;
+  // upsync
+  std::vector<FileQueueEntry> filesToUpSync;
+  std::vector<DirectoryQueueEntry> dirsToUpSync;
 };
 
 struct FileUploadMetadata {
@@ -425,6 +469,8 @@ inline std::string activityToString(ActivityStatus activity) {
     return "error";
   case ActivityStatus::SYNCING:
     return "syncing";
+  case ActivityStatus::EDITED:
+    return "edited";
   case ActivityStatus::QUEUED:
     return "queued";
   case ActivityStatus::UPLOAD:
@@ -480,22 +526,40 @@ inline size_t qPriorityToInt(QPriority priority) {
 inline QPriority intToQPriority(size_t priority) {
   switch (priority) {
   case 1:
-    return QPriority::FOLDER_DELETE;
+    return QPriority::FOLDER_DELETE_CLOUD;
   case 2:
-    return QPriority::FOLDER_MOVED;
+    return QPriority::FOLDER_MOVED_CLOUD;
   case 3:
-    return QPriority::FOLDER_RENAME;
+    return QPriority::FOLDER_RENAME_CLOUD;
   case 4:
-    return QPriority::FILE_DELETE;
+    return QPriority::FILE_RENAME_CLOUD;
   case 5:
-    return QPriority::FOLDER_RENAME;
+    return QPriority::FILE_MOVED_CLOUD;
   case 6:
-    return QPriority::FILE_MOVED;
+    return QPriority::FILE_DELETE_CLOUD;
   case 7:
-    return QPriority::FOLDER_CREATE;
+    return QPriority::FOLDER_DELETE;
   case 8:
-    return QPriority::FILE_UPLOAD;
+    return QPriority::FOLDER_MOVED;
   case 9:
+    return QPriority::FOLDER_RENAME;
+  case 10:
+    return QPriority::FILE_DELETE;
+  case 11:
+    return QPriority::FILE_RENAME;
+  case 12:
+    return QPriority::FILE_MOVED;
+  case 13:
+    return QPriority::FOLDER_CREATE_CLOUD;
+  case 14:
+    return QPriority::FILE_DOWNLOAD;
+  case 15:
+    return QPriority::FILE_MODIFIED_CLOUD;
+  case 16:
+    return QPriority::FOLDER_CREATE;
+  case 17:
+    return QPriority::FILE_UPLOAD;
+  case 18:
     return QPriority::FILE_MODIFIED;
   default:
     return QPriority::UNKNOWN;

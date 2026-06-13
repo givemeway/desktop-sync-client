@@ -1043,7 +1043,7 @@ void SyncWorker::handleModified(const std::string &path) {
       m_impl->m_dbManager.insertFile(f, fq);
 
       auto syncItem = Utility::convertToActivity<FileQueueEntry>(
-          fq, ActivityStatus::UPLOAD);
+          fq, ActivityStatus::EDITED);
       addActivity(fq.uuid, syncItem);
 
       // triggerUpload();

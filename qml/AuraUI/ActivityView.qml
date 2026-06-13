@@ -138,6 +138,7 @@ Item {
     function typeName(m,u){
       switch(m){
         case "upload"              : return "Added " + relativeTime(u) 
+        case "edited"              : return "Edited " + relativeTime(u)
         case "download"            : return "Added " + relativeTime(u)
         case "local_folder_create" : return "Added " + relativeTime(u)
         case "cloud_folder_create" : return "Added " + relativeTime(u)

@@ -21,9 +21,12 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <rpcdce.h>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
 #include <thread>
+#include <vector>
 namespace fs = std::filesystem;
 namespace sync_app {
 
@@ -171,6 +174,320 @@ void CloudSyncWorker::addActivity(const std::string &key,
 void CloudSyncWorker::removeActivity(const std::string &key) {
   m_activityStore.removeActivity(key);
   emit activityRemoved(key);
+}
+
+static void handleModifiedConflict(FileQueueEntry &cf, FileQueueEntry &lf,
+                                   std::vector<FileQueueEntry> &filesInConflict,
+                                   SyncStatus &localStatus) {
+  switch (localStatus) {
+  case SyncStatus::RENAME:
+    // download the modified cloud file
+    cf.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+    cf.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+    // local file is renamed - it is diverged. we upload it as new
+    lf.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+    lf.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+    lf.uuid = lf.origin = UuidUtils::generate();
+
+    filesInConflict.push_back(cf);
+    filesInConflict.push_back(lf);
+    return;
+
+  case SyncStatus::MODIFIED:
+    // download the modified cloud file
+    cf.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+    cf.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+    // upload the modified file as new
+    lf.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+    lf.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+    lf.uuid = lf.origin = UuidUtils::generate();
+
+    filesInConflict.push_back(cf);
+    filesInConflict.push_back(lf);
+
+    return;
+
+  case SyncStatus::DELETE:
+    // prioritize the local delete. We delete it from cloud
+    lf.priority = qPriorityToInt(QPriority::FILE_DELETE);
+    lf.sync_status = syncStatusToString(SyncStatus::DELETE);
+
+    filesInConflict.push_back(lf);
+
+    return;
+
+  case SyncStatus::MOVED:
+    // download the modified file
+    cf.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+    cf.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+    // local file moved - it is diverged. Upload it as new from new path
+    lf.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+    lf.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+    lf.uuid = lf.origin = UuidUtils::generate();
+
+    filesInConflict.push_back(cf);
+    filesInConflict.push_back(lf);
+
+    return;
+
+  default:
+
+    return;
+  }
+}
+
+static void handleRenameConflict(FileQueueEntry &cf, FileQueueEntry &lf,
+                                 std::vector<FileQueueEntry> &filesInConflict,
+                                 const SyncStatus &localStatus) {
+  switch (localStatus) {
+  case SyncStatus::RENAME:
+    if (cf.hashvalue == lf.hashvalue) {
+      // files are identical. Rename existing file to cloud name
+      cf.priority = qPriorityToInt(QPriority::FILE_RENAME_CLOUD);
+      cf.sync_status = syncStatusToString(SyncStatus::RENAME);
+
+    } else {
+      // cloud file renamed & modified. Download it.
+      cf.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+      cf.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
+    }
+    // upload the local renamed file as new to cloud
+    lf.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+    lf.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
+    lf.uuid = lf.origin = UuidUtils::generate();
+
+    filesInConflict.push_back(cf);
+    filesInConflict.push_back(lf);
+
+    return;
+
+  case SyncStatus::MODIFIED:
+
+    cf.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+    cf.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
+
+    lf.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+    lf.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
+    lf.uuid = lf.origin = UuidUtils::generate();
+    filesInConflict.push_back(cf);
+    filesInConflict.push_back(lf);
+
+    return;
+  case SyncStatus::DELETE:
+    // prioritize the local delete. We delete it from cloud
+    lf.priority = qPriorityToInt(QPriority::FILE_DELETE);
+    lf.sync_status = syncStatusToString(SyncStatus::DELETE);
+
+    filesInConflict.push_back(lf);
+
+    return;
+  case SyncStatus::MOVED:
+    if (cf.hashvalue == lf.hashvalue) {
+      cf.priority = qPriorityToInt(QPriority::FILE_RENAME_CLOUD);
+      cf.sync_status = syncStatusToString(SyncStatus::RENAME);
+
+    } else {
+      cf.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+      cf.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
+    }
+
+    lf.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+    lf.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
+    lf.uuid = lf.origin = UuidUtils::generate();
+
+    filesInConflict.push_back(cf);
+    filesInConflict.push_back(lf);
+
+    return;
+  default:
+    return;
+  }
+}
+static void handleMoveConflict(FileQueueEntry &cf, FileQueueEntry &lf,
+                               std::vector<FileQueueEntry> &filesInConflict,
+                               const SyncStatus &localStatus) {
+  switch (localStatus) {
+  case SyncStatus::RENAME:
+    if (cf.hashvalue == lf.hashvalue) {
+      cf.priority = qPriorityToInt(QPriority::FILE_MOVED_CLOUD);
+      cf.sync_status = syncStatusToString(SyncStatus::MOVED);
+
+    } else {
+      cf.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+      cf.sync_status = syncStatusToString(SyncStatus::CONFLICT_MOVE);
+    }
+
+    lf.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+    lf.sync_status = syncStatusToString(SyncStatus::CONFLICT_MOVE);
+    lf.uuid = lf.origin = UuidUtils::generate();
+
+    filesInConflict.push_back(cf);
+    filesInConflict.push_back(lf);
+
+    return;
+  case SyncStatus::MODIFIED:
+
+    cf.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+    cf.sync_status = syncStatusToString(SyncStatus::CONFLICT_MOVE);
+
+    lf.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+    lf.sync_status = syncStatusToString(SyncStatus::CONFLICT_MOVE);
+    lf.uuid = lf.origin = UuidUtils::generate();
+
+    return;
+  case SyncStatus::DELETE:
+    // prioritize the local delete. We delete it from cloud
+    lf.priority = qPriorityToInt(QPriority::FILE_DELETE);
+    lf.sync_status = syncStatusToString(SyncStatus::DELETE);
+
+    filesInConflict.push_back(lf);
+
+    return;
+  case SyncStatus::MOVED:
+    if (cf.hashvalue == lf.hashvalue) {
+      cf.priority = qPriorityToInt(QPriority::FILE_MOVED_CLOUD);
+      cf.sync_status = syncStatusToString(SyncStatus::MOVED);
+
+    } else {
+      cf.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+      cf.sync_status = syncStatusToString(SyncStatus::CONFLICT_MOVE);
+    }
+
+    lf.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+    lf.sync_status = syncStatusToString(SyncStatus::CONFLICT_MOVE);
+    lf.uuid = lf.origin = UuidUtils::generate();
+
+    return;
+  default:
+    return;
+  }
+}
+static void handleDeleteConflict(FileQueueEntry &cf, FileQueueEntry &lf,
+                                 const SyncStatus &localStatus) {
+  switch (localStatus) {
+  case SyncStatus::RENAME:
+    return;
+  case SyncStatus::MODIFIED:
+    return;
+  case SyncStatus::DELETE:
+    return;
+  case SyncStatus::MOVED:
+    return;
+  default:
+    return;
+  }
+}
+
+void CloudSyncWorker::updateFileQueueEntry(
+    FileQueueEntry &fq, FileQueueEntry &fq_1,
+    std::vector<FileQueueEntry> &filesInConflict, const SyncStatus &status) {
+
+  // cloud -> modified --> local moved / deleted / renamed / modified
+  if (fq.syncType == "cloud" && fq_1.syncType == "local") {
+    if (fq.sync_status == syncStatusToString(SyncStatus::MODIFIED)) {
+      auto localstatus = stringToSyncStatus(fq_1.sync_status);
+      auto cloudstatus = stringToSyncStatus(fq_1.sync_status);
+    }
+    if (fq.sync_status == syncStatusToString(SyncStatus::RENAME)) {
+      auto localstatus = stringToSyncStatus(fq_1.sync_status);
+      auto cloudstatus = stringToSyncStatus(fq_1.sync_status);
+    }
+    if (fq.sync_status == syncStatusToString(SyncStatus::MOVED)) {
+      auto localstatus = stringToSyncStatus(fq_1.sync_status);
+      auto cloudstatus = stringToSyncStatus(fq_1.sync_status);
+    }
+    if (fq.sync_status == syncStatusToString(SyncStatus::DELETE)) {
+      auto localstatus = stringToSyncStatus(fq_1.sync_status);
+      auto cloudstatus = stringToSyncStatus(fq_1.sync_status);
+    }
+  }
+  if (fq.syncType == "local" && fq_1.syncType == "cloud") {
+    if (fq_1.sync_status == syncStatusToString(SyncStatus::MODIFIED)) {
+      auto localstatus = stringToSyncStatus(fq_1.sync_status);
+      auto cloudstatus = stringToSyncStatus(fq_1.sync_status);
+    }
+    if (fq_1.sync_status == syncStatusToString(SyncStatus::RENAME)) {
+      auto localstatus = stringToSyncStatus(fq_1.sync_status);
+      auto cloudstatus = stringToSyncStatus(fq_1.sync_status);
+    }
+    if (fq_1.sync_status == syncStatusToString(SyncStatus::MOVED)) {
+      auto localstatus = stringToSyncStatus(fq_1.sync_status);
+      auto cloudstatus = stringToSyncStatus(fq_1.sync_status);
+    }
+    if (fq_1.sync_status == syncStatusToString(SyncStatus::DELETE)) {
+      auto localstatus = stringToSyncStatus(fq_1.sync_status);
+      auto cloudstatus = stringToSyncStatus(fq_1.sync_status);
+    }
+  }
+  // cloud -> renamed  --> local moved / deleted / renamed / modified
+  // cloud -> moved    --> local moved / deleted / renamed / modified
+  // cloud -> deleted  --> local moved / deleted / renamed / modified
+
+  if (status == SyncStatus::MODIFIED) {
+    if (fq.syncType == "cloud" && fq_1.syncType == "local") {
+
+      fq.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+      fq.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+      fq_1.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+      fq_1.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+    }
+
+    if (fq.syncType == "local" && fq_1.syncType == "cloud") {
+      fq_1.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+      fq_1.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+      fq.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+      fq.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+    }
+    filesInConflict.push_back(fq_1);
+    filesInConflict.push_back(fq);
+    return;
+  }
+
+  if (fq.syncType == "cloud" && fq_1.syncType == "local") {
+    fq.absPath = fq.path == "/" ? m_syncPath + fq_1.filename
+                                : m_syncPath + fq.path + fq_1.filename;
+
+    if (status == SyncStatus::RENAME) {
+      fq.priority = qPriorityToInt(QPriority::FILE_RENAME_CLOUD);
+      fq.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
+      fq_1.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
+    }
+
+    if (status == SyncStatus::MOVED) {
+      fq.priority = qPriorityToInt(QPriority::FILE_MOVED_CLOUD);
+      fq.sync_status = syncStatusToString(SyncStatus::CONFLICT_MOVE);
+      fq_1.sync_status = syncStatusToString(SyncStatus::CONFLICT_MOVE);
+    }
+
+    fq_1.uuid = UuidUtils::generate();
+    fq_1.absPath = fq.absPath;
+    fq_1.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+
+    filesInConflict.push_back(fq);
+    filesInConflict.push_back(fq_1);
+
+  } else if (fq.syncType == "local" && fq_1.syncType == "cloud") {
+    fq_1.absPath = fq_1.path == "/" ? m_syncPath + fq.filename
+                                    : m_syncPath + fq_1.path + fq.filename;
+    if (status == SyncStatus::RENAME) {
+      fq_1.priority = qPriorityToInt(QPriority::FILE_RENAME_CLOUD);
+      fq_1.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
+      fq.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
+    }
+
+    if (status == SyncStatus::MOVED) {
+      fq_1.priority = qPriorityToInt(QPriority::FILE_MOVED_CLOUD);
+      fq_1.sync_status = syncStatusToString(SyncStatus::CONFLICT_MOVE);
+      fq.sync_status = syncStatusToString(SyncStatus::CONFLICT_MOVE);
+    }
+
+    fq.uuid = UuidUtils::generate();
+    fq.absPath = fq_1.absPath;
+    fq.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+
+    filesInConflict.push_back(fq);
+    filesInConflict.push_back(fq_1);
+  }
 }
 
 bool CloudSyncWorker::pollCloudToSyncToLocal() {
@@ -1656,6 +1973,490 @@ void CloudSyncWorker::initActivityAndPriorityQ() {
       addActivity(syncItem.id, syncItem);
     }
     m_syncWorker.pushDirEntry(dq);
+  }
+}
+
+void CloudSyncWorker::controlThread() {
+
+  /*TODO
+      1. create the UUID Map of the synced DB
+      2. create the UUID map of the CloudFileMetadata & cloudFolderMetadata
+      3. compute the differences between the cloud & synced state
+      4. create the UUID map for the local DB
+      5.  compute the difference between the local & synced state
+      6. compute the differences between the changes computed to identify
+          conflicts
+      7. delegate operations - upload / download give priority to cloud
+     move / rename / delete followed by local move / rename / delete
+  */
+  std::optional<CloudMetadataResult> result{std::nullopt};
+  std::optional<std::vector<FileMetadata>> dbFiles{std::nullopt};
+  std::optional<std::vector<SyncedMetadata>> syncedItems{std::nullopt};
+  std::optional<std::vector<DirectoryMetadata>> dbDirs{std::nullopt};
+  std::optional<std::vector<FileQueueEntry>> dbQFiles{std::nullopt};
+  std::optional<std::vector<DirectoryQueueEntry>> dbQDirs{std::nullopt};
+  {
+    std::lock_guard<std::recursive_mutex> lock(m_dbManager.getSyncMutex());
+    result = m_apiClient.getMetadata();
+    syncedItems = m_dbManager.getAllSyncedItems();
+    dbFiles = m_dbManager.getAllFiles();
+    dbDirs = m_dbManager.getAllDirectories();
+  }
+  if (result->success) {
+    auto cloudFiles = result->files;
+    auto cloudDirs = result->directories;
+
+    std::map<std::string, CloudFileMetadata> cloudFileByUuid;
+    std::map<std::string, CloudFolderMetadata> cloudDirByUuid;
+    std::map<std::string, CloudFolderMetadata> cloudDirByPath;
+    std::map<std::string, FileMetadata> localFileByUuid;
+    std::map<std::string, DirectoryMetadata> localDirByUuid;
+    std::map<std::string, SyncedMetadata> syncedItemsByOrigin;
+
+    ReconciliationResult result;
+
+    for (const auto &cf : cloudFiles) {
+      cloudFileByUuid[cf.uuid] = cf;
+    }
+    for (const auto &cd : cloudDirs) {
+      cloudDirByUuid[cd.uuid] = cd;
+      cloudDirByPath[cd.path] = cd;
+    }
+    for (const auto &f : dbFiles.value()) {
+      localFileByUuid[f.uuid] = f;
+    }
+    for (const auto &d : dbDirs.value()) {
+      localDirByUuid[d.uuid] = d;
+    }
+    for (const auto &s : syncedItems.value()) {
+      syncedItemsByOrigin[s.origin] = s;
+    }
+
+    std::vector<FileQueueEntry> filesToSync;
+    std::vector<DirectoryQueueEntry> dirsToSync;
+    std::vector<FileQueueEntry> filesInConflict;
+    std::vector<DirectoryQueueEntry> dirsInConflict;
+    std::map<std::string, std::map<std::string, std::vector<FileQueueEntry>>>
+        filesToSyncMap;
+    std::map<std::string, FileQueueEntry> filesToSyncPathMap;
+    std::map<std::string, DirectoryQueueEntry> dirsToSyncMap;
+    std::map<std::string, DirectoryQueueEntry> dirsToUpSyncPathMap;
+
+    //-------------------------------------------------------
+    // compute differences between cloud & synced state;
+    //-------------------------------------------------------
+    // 1. cloud files not synced
+
+    for (const auto &f : cloudFiles) {
+      auto it = syncedItemsByOrigin.find(f.origin);
+      if (it == syncedItemsByOrigin.end()) {
+        // new file added in cloud
+        FileQueueEntry fq =
+            Utility::convert<FileQueueEntry>(f, SyncStatus::NEW);
+        fq.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+        fq.syncType = "cloud";
+        filesToSync.push_back(fq);
+      }
+      if (it != syncedItemsByOrigin.end() && it->second.name != f.filename &&
+          it->second.parentID == f.dirID) {
+        // file renamed in cloud
+        FileQueueEntry fq = Utility::convert<FileQueueEntry>(
+            f, SyncStatus::RENAME, "", it->second.name);
+        fq.priority = qPriorityToInt(QPriority::FILE_RENAME_CLOUD);
+        fq.syncType = "cloud";
+        filesToSync.push_back(fq);
+      }
+      if (it != syncedItemsByOrigin.end() && it->second.name == f.filename &&
+          it->second.parentID != f.dirID) {
+        // file moved in cloud
+        auto old_path = m_dbManager.getPathById(it->second.uuid);
+        FileQueueEntry fq = Utility::convert<FileQueueEntry>(
+            f, SyncStatus::MOVED, old_path.value(), it->second.name);
+        fq.priority = qPriorityToInt(QPriority::FILE_MOVED_CLOUD);
+        fq.syncType = "cloud";
+        filesToSync.push_back(fq);
+      }
+      if (it != syncedItemsByOrigin.end() &&
+          f.hashvalue != it->second.hashvalue) {
+        // file modified in cloud
+        FileQueueEntry fq = Utility::convert<FileQueueEntry>(
+            f, SyncStatus::MODIFIED, "", it->second.name);
+        fq.priority = qPriorityToInt(QPriority::FILE_MODIFIED_CLOUD);
+        fq.syncType = "cloud";
+        filesToSync.push_back(fq);
+      }
+    }
+    for (const auto &s : syncedItems.value()) {
+      auto it = cloudFileByUuid.find(s.origin);
+      if (it == cloudFileByUuid.end()) {
+        // file deleted in cloud
+        std::optional<std::string> path;
+        std::optional<FileMetadata> file;
+        {
+          std::lock_guard<std::recursive_mutex> lock(
+              m_dbManager.getSyncMutex());
+          path = m_dbManager.getPathById(s.uuid);
+          file = m_dbManager.getFileByPath(path.value(), s.name);
+        }
+        FileQueueEntry fq =
+            Utility::convert<FileQueueEntry>(file.value(), SyncStatus::DELETE);
+        fq.priority = qPriorityToInt(QPriority::FILE_DELETE_CLOUD);
+        fq.syncType = "cloud";
+        filesToSync.push_back(fq);
+      }
+    }
+
+    // 2. cloud dirs not synced
+    for (const auto &d : cloudDirs) {
+      auto it = syncedItemsByOrigin.find(d.uuid);
+      if (it == syncedItemsByOrigin.end()) {
+        // new dir in cloud
+        LocalFolderCreateMetadata cf;
+        cf.absPath = d.path == "/" ? m_syncPath : m_syncPath + d.path;
+        cf.path = d.path;
+        cf.folder = d.folder;
+        cf.uuid = d.uuid;
+        cf.device = d.device;
+        cf.created_at = d.created_at;
+        auto dirPaths = getPathComponents(d.path);
+
+        for (auto &path : dirPaths) {
+          auto it = cloudDirByPath.find(path);
+          if (it != cloudDirByPath.end()) {
+            if (!cf.dirIDs) {
+              cf.dirIDs = std::map<std::string, std::string>();
+            }
+            (*cf.dirIDs)[path] = it->second.uuid;
+          }
+        }
+        // result.foldersToCreateLocal.push_back(cf);
+        DirectoryQueueEntry dq =
+            Utility::convert<DirectoryQueueEntry>(cf, SyncStatus::NEW, "");
+        dq.syncType = "cloud";
+        dq.priority = qPriorityToInt(QPriority::FOLDER_CREATE_CLOUD);
+        dirsToSync.push_back(dq);
+      }
+    }
+    for (const auto &s : syncedItems.value()) {
+      // dir deleted in cloud
+      auto it = cloudDirByUuid.find(s.origin);
+      if (it == cloudDirByUuid.end()) {
+        LocalFolderDeleteMetadata dq;
+        std::optional<std::string> path = "";
+        {
+          std::lock_guard<std::recursive_mutex> lock(
+              m_dbManager.getSyncMutex());
+          path = m_dbManager.getPathById(s.uuid);
+        }
+        dq.absPath =
+            path.value() == "/" ? m_syncPath : m_syncPath + path.value();
+        auto part = m_dbManager.getFolderDevice(path.value());
+        dq.inode = s.inode;
+        dq.folder = s.name;
+        dq.device = part.device;
+        dq.path = path.value();
+        dq.uuid = s.uuid;
+        dq.created_at = s.last_modified;
+        //        result.foldersToDeleteLocal.push_back(dq);
+        DirectoryQueueEntry d =
+            Utility::convert<DirectoryQueueEntry>(dq, SyncStatus::DELETE, "");
+        d.syncType = "cloud";
+        d.priority = qPriorityToInt(QPriority::FOLDER_DELETE_CLOUD);
+        dirsToSync.push_back(d);
+      }
+    }
+
+    // 3. local files not synced
+    for (const auto &f : dbFiles.value()) {
+      auto it = syncedItemsByOrigin.find(f.origin);
+      if (it == syncedItemsByOrigin.end()) {
+        // new file in local
+        FileQueueEntry fq;
+        fq = Utility::convert<FileQueueEntry>(f, SyncStatus::NEW);
+        fq.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+        fq.syncType = "local";
+        filesToSync.push_back(fq);
+        //        result.filesToUpSync.push_back(fq);
+      }
+      if (it != syncedItemsByOrigin.end() &&
+          f.hashvalue != it->second.hashvalue) {
+        // file modified in local
+        FileQueueEntry fq;
+        fq = Utility::convert<FileQueueEntry>(f, SyncStatus::MODIFIED);
+        fq.priority = qPriorityToInt(QPriority::FILE_MODIFIED);
+        fq.syncType = "local";
+        filesToSync.push_back(fq);
+        //        result.filesToUpSync.push_back(fq);
+      }
+      if (it != syncedItemsByOrigin.end() && f.filename != it->second.name &&
+          f.dirID == it->second.parentID) {
+        FileQueueEntry fq;
+        auto path = m_dbManager.getPathById(it->second.uuid);
+        fq = Utility::convert<FileQueueEntry>(f, SyncStatus::RENAME,
+                                              path.value(), it->second.name);
+        fq.syncType = "local";
+        fq.priority = qPriorityToInt(QPriority::FILE_RENAME);
+        filesToSync.push_back(fq);
+        //        result.filesToUpSync.push_back(fq);
+      }
+      if (it != syncedItemsByOrigin.end() && f.filename == it->second.name &&
+          f.dirID != it->second.parentID) {
+        FileQueueEntry fq;
+        auto path = m_dbManager.getPathById(it->second.uuid);
+        fq = Utility::convert<FileQueueEntry>(f, SyncStatus::MOVED,
+                                              path.value(), it->second.name);
+        fq.syncType = "local";
+        fq.priority = qPriorityToInt(QPriority::FILE_MOVED);
+        filesToSync.push_back(fq);
+        //        result.filesToUpSync.push_back(fq);
+      }
+    }
+    for (const auto &f : syncedItems.value()) {
+      auto it = localFileByUuid.find(f.origin);
+      if (it == localFileByUuid.end()) {
+        // file deleted local
+        FileQueueEntry fq;
+        auto path = m_dbManager.getPathById(f.uuid);
+        fq.path = path.value();
+        fq.filename = f.name;
+        fq.absPath =
+            path.value() == "/" ? m_syncPath : m_syncPath + path.value();
+        fq.dirID = f.parentID;
+        fq.hashvalue = f.hashvalue;
+        fq.inode = f.inode;
+        fq.last_modified = f.last_modified;
+        fq.sync_status = syncStatusToString(SyncStatus::DELETE);
+        fq.syncType = "local";
+        fq.priority = qPriorityToInt(QPriority::FILE_DELETE);
+        filesToSync.push_back(fq);
+        //        result.filesToUpSync.push_back(fq);
+      }
+    }
+
+    // 4. local dirs not synced
+    for (const auto &d : dbDirs.value()) {
+      auto it = syncedItemsByOrigin.find(d.uuid);
+      if (it == syncedItemsByOrigin.end()) {
+        // new dir in local
+        DirectoryQueueEntry dq;
+        dq = Utility::convert<DirectoryQueueEntry>(d, SyncStatus::NEW);
+        dq.priority = qPriorityToInt(QPriority::FOLDER_CREATE);
+        dq.syncType = "local";
+        dirsToSync.push_back(dq);
+        //        result.dirsToUpSync.push_back(dq);
+      }
+      if (it != syncedItemsByOrigin.end()) {
+        auto path = m_dbManager.getPathById(it->second.uuid);
+        DirectoryQueueEntry dq;
+        if (d.folder != it->second.name && path.value() == d.path) {
+          dq = Utility::convert<DirectoryQueueEntry>(d, SyncStatus::RENAME, "",
+                                                     it->second.name);
+          dq.priority = qPriorityToInt(QPriority::FOLDER_RENAME);
+        }
+        if (d.folder == it->second.name && path.value() != d.path) {
+          dq = Utility::convert<DirectoryQueueEntry>(d, SyncStatus::MOVED,
+                                                     path.value());
+          dq.priority = qPriorityToInt(QPriority::FOLDER_MOVED);
+        }
+        dq.syncType = "local";
+        dirsToSync.push_back(dq);
+        //        result.dirsToUpSync.push_back(dq);
+      }
+    }
+    for (const auto &d : syncedItems.value()) {
+      auto it = localDirByUuid.find(d.uuid);
+      if (it == localDirByUuid.end()) {
+        // dir deleted local
+        DirectoryQueueEntry dq;
+        auto path = m_dbManager.getPathById(d.uuid);
+        dq.absPath =
+            path.value() == "/" ? m_syncPath : m_syncPath + path.value();
+        dq.uuid = d.uuid;
+        dq.inode = d.inode;
+        dq.folder = d.name;
+        auto part = m_dbManager.getFolderDevice(path.value());
+        dq.device = part.device;
+        dq.path = path.value();
+        dq.created_at = d.last_modified;
+        dq.sync_status = syncStatusToString(SyncStatus::DELETE);
+        dq.syncType = "local";
+        dq.priority = qPriorityToInt(QPriority::FOLDER_DELETE);
+        dirsToSync.push_back(dq);
+        //        result.dirsToUpSync.push_back(dq);
+      }
+    }
+    for (const auto &f : filesToSync) {
+      auto itUuid = filesToSyncMap.find(f.uuid);
+      std::string path = f.path + f.filename;
+      auto itPath = filesToSyncPathMap.find(path);
+      if (itPath == filesToSyncPathMap.end()) {
+        filesToSyncPathMap[path] = f;
+      } else {
+        FileQueueEntry file = itPath->second;
+        if (file.uuid == f.uuid) {
+          filesToSyncPathMap.erase(path);
+        } else {
+          // new file conflict
+          FileQueueEntry f1 = f;
+          FileQueueEntry f2 = file;
+          FileQueueEntry cf;
+          FileQueueEntry lf;
+          if (f1.syncType == "local" && f2.syncType == "cloud") {
+            cf = f2;
+            lf = f1;
+          }
+          if (f1.syncType == "cloud" && f2.syncType == "local") {
+            cf = f1;
+            lf = f2;
+          }
+
+          cf.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+          lf.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+          cf.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+          lf.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+          lf.uuid = lf.origin = UuidUtils::generate();
+          filesToSyncPathMap.erase(path);
+          filesInConflict.push_back(cf);
+          filesInConflict.push_back(lf);
+        }
+      }
+      if (itUuid == filesToSyncMap.end()) {
+        filesToSyncMap[f.uuid][f.syncType.value()].push_back(f);
+      }
+      if (itUuid != filesToSyncMap.end()) {
+        auto fileInMap = itUuid->second;
+        auto it = fileInMap.find("cloud");
+        if (it != fileInMap.end() && f.syncType == "cloud") {
+          filesToSyncMap[f.uuid]["cloud"].push_back(f);
+        } else if (it == fileInMap.end() && f.syncType == "local") {
+          filesToSyncMap[f.uuid]["local"].push_back(f);
+        } else if ((it != fileInMap.end() && f.syncType == "local") ||
+                   (it == fileInMap.end() && f.syncType == "cloud")) {
+          // conflict resolution
+          if (it->first == "cloud" && f.syncType == "local") {
+            for (auto &fi : it->second) {
+              FileQueueEntry cf = fi;
+              FileQueueEntry lf = f;
+              auto localStatus = stringToSyncStatus(lf.sync_status);
+              auto cloudStatus = stringToSyncStatus(cf.sync_status);
+              if (cloudStatus == SyncStatus::MODIFIED) {
+                handleModifiedConflict(cf, lf, filesInConflict, localStatus);
+              }
+              if (cloudStatus == SyncStatus::RENAME) {
+                handleRenameConflict(cf, lf, filesInConflict, localStatus);
+              }
+              if (cloudStatus == SyncStatus::MOVED) {
+                handleMoveConflict(cf, lf, filesInConflict, localStatus);
+              }
+              if (cloudStatus == SyncStatus::DELETE) {
+                handleDeleteConflict(cf, lf, localStatus);
+              }
+            }
+          }
+          if (it->first == "local" && f.syncType == "cloud") {
+            for (auto &fi : it->second) {
+              FileQueueEntry cf = f;
+              FileQueueEntry lf = fi;
+              auto localStatus = stringToSyncStatus(lf.sync_status);
+              auto cloudStatus = stringToSyncStatus(cf.sync_status);
+              if (cloudStatus == SyncStatus::MODIFIED) {
+                handleModifiedConflict(cf, lf, filesInConflict, localStatus);
+              }
+              if (cloudStatus == SyncStatus::RENAME) {
+                handleRenameConflict(cf, lf, filesInConflict, localStatus);
+              }
+              if (cloudStatus == SyncStatus::MOVED) {
+                handleMoveConflict(cf, lf, filesInConflict, localStatus);
+              }
+              if (cloudStatus == SyncStatus::DELETE) {
+                handleDeleteConflict(cf, lf, localStatus);
+              }
+            }
+          }
+        }
+      }
+      /*
+            if (itUuid != filesToSyncMap.end() &&
+                itUuid->second.filename == f.filename &&
+                itUuid->second.path == f.path &&
+                itUuid->second.hashvalue != f.hashvalue &&
+                itUuid->second.sync_status ==
+                    syncStatusToString(SyncStatus::MODIFIED) &&
+                f.sync_status == syncStatusToString(SyncStatus::MODIFIED)) {
+
+              FileQueueEntry fq = f;
+              FileQueueEntry fq_1 = itUuid->second;
+
+              updateFileQueueEntry(fq, fq_1, filesInConflict,
+         SyncStatus::MODIFIED); filesToSyncMap.erase(fq.uuid);
+
+            } else if (itUuid != filesToSyncMap.end()) {
+              FileQueueEntry fq = f;
+              FileQueueEntry fq_1 = itUuid->second;
+
+              if (itUuid->second.filename != f.filename &&
+                  itUuid->second.path == f.path &&
+                  itUuid->second.hashvalue == f.hashvalue &&
+                  itUuid->second.sync_status ==
+                      syncStatusToString(SyncStatus::RENAME) &&
+                  f.sync_status == syncStatusToString(SyncStatus::RENAME)) {
+
+                filesToSyncMap.erase(f.uuid);
+                updateFileQueueEntry(fq, fq_1, filesInConflict,
+         SyncStatus::RENAME);
+              }
+
+              if (itUuid->second.filename == f.filename &&
+                  itUuid->second.path != f.path &&
+                  itUuid->second.hashvalue == f.hashvalue &&
+                  itUuid->second.sync_status ==
+                      syncStatusToString(SyncStatus::MOVED) &&
+                  f.sync_status == syncStatusToString(SyncStatus::MOVED)) {
+
+                filesToSyncMap.erase(f.uuid);
+                updateFileQueueEntry(fq, fq_1, filesInConflict,
+         SyncStatus::MOVED);
+              }
+
+              if (itUuid->second.filename == f.filename &&
+                  itUuid->second.path == f.path &&
+                  itUuid->second.hashvalue == f.hashvalue &&
+                  itUuid->second.sync_status ==
+                      syncStatusToString(SyncStatus::DELETE) &&
+                  f.sync_status == syncStatusToString(SyncStatus::DELETE)) {
+
+                fq.priority = qPriorityToInt(QPriority::FILE_DELETE_CLOUD);
+                fq.syncType = "cloud";
+                filesToSyncMap[f.uuid] = fq;
+              }
+            }
+
+            if (itPath != filesToSyncPathMap.end()) {
+              // identical file name in same path present independently in cloud
+         &
+              // local | new file/deleted file conflict
+              FileQueueEntry fq = f;
+              FileQueueEntry fq_1 = itPath->second;
+              if (fq.syncType == "cloud" && fq_1.syncType == "local") {
+                fq.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+                fq.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+                fq_1.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+                fq_1.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+              }
+              if (fq.syncType == "local" && fq_1.syncType == "cloud") {
+                fq.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+                fq.priority = qPriorityToInt(QPriority::FILE_UPLOAD);
+                fq_1.sync_status = syncStatusToString(SyncStatus::CONFLICT);
+                fq_1.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+              }
+              filesInConflict.push_back(fq_1);
+              filesInConflict.push_back(fq);
+              filesToSyncMap.erase(f.uuid);
+            } else {
+              filesToSyncPathMap[f.path + f.filename] = f;
+            }
+          */
+    }
   }
 }
 

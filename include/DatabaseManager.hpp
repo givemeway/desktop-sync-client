@@ -49,6 +49,15 @@ public:
   std::optional<std::vector<SyncItem>> getAllActivities();
   void cleanupActivities();
 
+  // synced State operations ---------------
+  std::optional<std::vector<SyncedMetadata>> getAllSyncedItems();
+  std::optional<SyncedMetadata> findByPath(const std::string &path, bool isDir);
+  std::optional<SyncedMetadata> findByInode(const std::string &inode);
+  std::optional<SyncedMetadata> findByUuid(const std::string &uuid);
+  std::optional<std::string> getPathById(const std::string &uuid);
+  bool insertItem(const FileMetadata &f);
+  bool insertItem(const DirectoryMetadata &d);
+
   // ---------------------------------------
 
   bool moveFile(const FileMetadata &f, const FileQueueEntry &fq);

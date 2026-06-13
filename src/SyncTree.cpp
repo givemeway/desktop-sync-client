@@ -1,10 +1,16 @@
 #include "SyncTree.hpp"
 #include "Utility.hpp"
+#include "types.hpp"
 #include <filesystem>
 #include <iostream>
 namespace fs = std::filesystem;
 
 namespace sync_app {
+
+SyncNode::SyncNode(std::string n, std::string i, bool d, SyncMetadata &meta,
+                   std::shared_ptr<SyncNode> p)
+    : name(n), inode(i), uuid(meta.uuid), last_modified(meta.last_modified),
+      lastSynced(meta.lastSynced), isDir(d), parent(p) {};
 
 SyncNode::SyncNode(std::string n, std::string i, bool d,
                    std::shared_ptr<SyncNode> p)
@@ -30,8 +36,13 @@ std::string SyncNode::getFullPath() const {
 }
 
 SyncTree::SyncTree(const std::string &syncPath)
-    : m_root(
-          std::make_shared<SyncNode>("/", Utility::getInode(syncPath), true)) {}
+    : m_root(std::make_shared<SyncNode>(
+          "/", syncPath != "" ? Utility::getInode(syncPath) : "", true)) {}
+
+SyncTree::SyncTree(const std::string &syncPath, SyncMetadata &meta)
+    : m_root(std::make_shared<SyncNode>(
+          "/", syncPath != "" ? Utility::getInode(syncPath) : "", true, meta)) {
+}
 
 SyncTree::~SyncTree() {}
 
@@ -81,6 +92,30 @@ void SyncTree::insertPath(const std::string &path, const std::string &inode,
   //  auto newNode = std::make_shared<SyncNode>(name, inode, isDir, current);
   current->name = name;
   current->inode = inode;
+  current->isDir = isDir;
+  current->isDirty = true;
+  //  m_inodeTreeMap[inode] = newNode;
+}
+
+void SyncTree::insertSyncedPath(const SyncMetadata &meta,
+                                const std::string &path, bool isDir) {
+  std::lock_guard<std::recursive_mutex> lock(m_mtx);
+
+  auto parts = splitPath(path);
+  auto current = m_root;
+
+  for (size_t i = 0; i < parts.size(); ++i) {
+    auto &name = parts[i];
+    if (current->children.find(name) == current->children.end()) {
+      current->children[name] =
+          std::make_shared<SyncNode>(name, "", true, current);
+    }
+    current = current->children[name];
+  }
+  std::string name = parts.back();
+  //  auto newNode = std::make_shared<SyncNode>(name, inode, isDir, current);
+  current->name = name;
+  current->inode = "";
   current->isDir = isDir;
   current->isDirty = true;
   //  m_inodeTreeMap[inode] = newNode;

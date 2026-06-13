@@ -67,6 +67,7 @@ inline auto create_storage_impl(const std::string &path) {
           make_column("cloudOnly", &FileQueueEntry::isCloudOnly),
           make_column("lastSyncedHashValue",
                       &FileQueueEntry::lastSyncedHashValue),
+          make_column("syncType", &FileQueueEntry::syncType),
           primary_key(&FileQueueEntry::path, &FileQueueEntry::filename),
           foreign_key(&FileQueueEntry::dirID)
               .references(&DirectoryQueueEntry::uuid)),
@@ -82,9 +83,28 @@ inline auto create_storage_impl(const std::string &path) {
           make_column("old_path", &DirectoryQueueEntry::old_path),
           make_column("inode", &DirectoryQueueEntry::inode),
           make_column("lastSynced", &DirectoryQueueEntry::lastSynced),
+          make_column("syncType", &DirectoryQueueEntry::syncType),
           primary_key(&DirectoryQueueEntry::device,
                       &DirectoryQueueEntry::folder,
                       &DirectoryQueueEntry::path)),
+      make_table<SyncedMetadata>(
+          "SyncedState", make_column("uuid", &SyncedMetadata::uuid),
+          make_column("name", &SyncedMetadata::name),
+          make_column("last_modified", &SyncedMetadata::last_modified),
+          make_column("hashvalue", &SyncedMetadata::hashvalue),
+          make_column("size", &SyncedMetadata::size),
+          make_column("inode", &SyncedMetadata::inode),
+          make_column("absPath", &SyncedMetadata::absPath),
+          make_column("versions", &SyncedMetadata::versions),
+          make_column("origin", &SyncedMetadata::origin, unique()),
+          make_column("lastSynced", &SyncedMetadata::lastSynced),
+          make_column("parentID", &SyncedMetadata::parentID),
+          make_column("cloudOnly", &SyncedMetadata::isCloudOnly),
+          make_column("isDir", &SyncedMetadata::isDir),
+          make_column("isDirty", &SyncedMetadata::isDirty),
+          make_column("ext", &SyncedMetadata::isDirty),
+          primary_key(&SyncedMetadata::parentID, &SyncedMetadata::name,
+                      &SyncedMetadata::isDir)),
       make_table<SyncItem>("Activity", make_column("name", &SyncItem::name),
                            make_column("type", &SyncItem::type),
                            make_column("path", &SyncItem::path),
@@ -297,8 +317,137 @@ std::optional<std::vector<SyncItem>> DatabaseManager::getAllActivities() {
   }
 }
 
-// ------------------------------
+// Synced state Operations ------------------------------
 
+bool DatabaseManager::insertItem(const FileMetadata &f) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  auto parts = std::filesystem::path(f.path);
+  auto current = m_impl->storage.get<SyncedMetadata>(std::nullopt, "/", true);
+  std::string path = "/";
+  for (auto it = parts.begin(); it != parts.end(); ++it) {
+    auto node = it->generic_string();
+    path += node;
+    bool isItemDir = std::next(it) != parts.end() ? true : false;
+    auto child =
+        m_impl->storage.get<SyncedMetadata>(current.uuid, node, isItemDir);
+    if (child.uuid == "") {
+      SyncedMetadata item;
+      if (!isItemDir) {
+        path = std::filesystem::path(path).parent_path().generic_string();
+      }
+      auto pathParts = getFolderDevice(std::filesystem::path(path));
+      auto dir = m_impl->storage.get<DirectoryMetadata>(pathParts.device,
+                                                        pathParts.folder, path);
+      if (dir.uuid == "")
+        return false;
+      item.parentID = current.uuid;
+      item.name = node;
+      item.uuid = dir.uuid;
+      item.origin = isItemDir ? dir.uuid : f.origin;
+      item.isDirty = true;
+      item.isDir = isItemDir;
+      item.last_modified = isItemDir ? dir.created_at : f.last_modified;
+      item.lastSynced = "";
+      item.hashvalue = isItemDir ? "" : f.hashvalue;
+      item.absPath = "";
+      item.ext = isItemDir
+                     ? "folder"
+                     : std::filesystem::path(path).extension().generic_string();
+      item.versions = isItemDir ? 0 : f.versions;
+      item.inode = dir.inode;
+      m_impl->storage.replace<SyncedMetadata>(item);
+      current = item;
+    } else {
+      current = child;
+    }
+  }
+  return true;
+}
+
+bool DatabaseManager::insertItem(const DirectoryMetadata &d) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  auto parts = std::filesystem::path(d.path);
+  auto current = m_impl->storage.get<SyncedMetadata>(std::nullopt, "/", true);
+  std::string path = "/";
+  for (auto it = parts.begin(); it != parts.end(); ++it) {
+    auto node = it->generic_string();
+    path += node;
+    auto child = m_impl->storage.get<SyncedMetadata>(current.uuid, node, true);
+    if (child.uuid == "") {
+      SyncedMetadata item;
+      auto pathParts = getFolderDevice(std::filesystem::path(path));
+      auto dir = m_impl->storage.get<DirectoryMetadata>(pathParts.device,
+                                                        pathParts.folder, path);
+      if (dir.uuid == "")
+        return false;
+      item.parentID = current.uuid;
+      item.name = node;
+      item.uuid = dir.uuid;
+      item.origin = dir.uuid;
+      item.isDirty = true;
+      item.isDir = true;
+      item.last_modified = dir.created_at;
+      item.lastSynced = "";
+      item.hashvalue = "";
+      item.absPath = "";
+      item.ext = "folder";
+      item.versions = 0;
+      item.inode = dir.inode;
+      m_impl->storage.replace<SyncedMetadata>(item);
+      current = item;
+    } else {
+      current = child;
+    }
+  }
+  return true;
+}
+
+std::optional<SyncedMetadata>
+DatabaseManager::findByPath(const std::string &path, bool isDir) {
+  // get the root item ==> with name = "/"
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  auto parts = std::filesystem::path(path);
+  auto current = m_impl->storage.get<SyncedMetadata>(std::nullopt, "/", true);
+  for (auto it = parts.begin(); it != parts.end(); ++it) {
+    auto node = it->generic_string();
+    bool isItemDir = std::next(it) != parts.end() ? true : isDir;
+    auto child =
+        m_impl->storage.get<SyncedMetadata>(current.uuid, node, isItemDir);
+    if (child.uuid != "") {
+      current = child;
+    } else {
+      return std::nullopt;
+    }
+  }
+  return current;
+}
+
+std::optional<std::vector<SyncedMetadata>>
+DatabaseManager::getAllSyncedItems() {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  return m_impl->storage.get_all<SyncedMetadata>();
+}
+
+std::optional<std::string>
+DatabaseManager::getPathById(const std::string &uuid) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  std::string path = "/";
+  std::function<std::optional<std::string>(const std::string &)> dfs =
+      [&](const std::string &id) -> std::optional<std::string> {
+    if (id != "") {
+      return std::nullopt;
+    }
+    auto item = m_impl->storage.get<SyncedMetadata>(id);
+    if (item.name != "/" && item.name != "") {
+      path += item.name;
+      return dfs(item.parentID);
+    }
+    return path;
+  };
+  return dfs(uuid);
+}
+
+//------------------------------
 // File operations
 std::optional<std::vector<FileMetadata>> DatabaseManager::getAllFiles() {
   std::lock_guard<std::recursive_mutex> lock(m_syncMutex);

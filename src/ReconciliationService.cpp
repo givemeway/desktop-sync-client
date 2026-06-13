@@ -394,6 +394,8 @@ bool ReconciliationService::reconcileLocalState(
     const std::vector<ScannedDirectory> &scannedDirs) {
   std::cout << "[Reconcile] Reconciling local filesystem with database..."
             << std::endl;
+  // update the local Tree with the UUID
+  // compare the synced Tree with local Tree and compute the changes
 
   // 1. Fetch current DB state
   auto dbFiles = m_dbManager.getAllFiles();

@@ -132,6 +132,10 @@ private:
 
   std::optional<bool> moveFile(ApiClient &client, const FileQueueEntry &fq);
 
+  void updateFileQueueEntry(FileQueueEntry &fq, FileQueueEntry &fq_1,
+                            std::vector<FileQueueEntry> &filesInConflict,
+                            const SyncStatus &status);
+
   void updateActivityMap(ReconciliationResult &result);
 
   void updateActivity(const std::string &key, const SyncItem &item);
