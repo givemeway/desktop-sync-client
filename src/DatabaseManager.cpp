@@ -447,6 +447,13 @@ DatabaseManager::getPathById(const std::string &uuid) {
   return dfs(uuid);
 }
 
+std::optional<SyncedMetadata>
+DatabaseManager::findByUuid(const std::string &uuid) {
+  std::lock_guard<std::recursive_mutex> lock(m_syncMutex);
+  auto item = m_impl->storage.get<SyncedMetadata>(uuid);
+  return item;
+}
+
 //------------------------------
 // File operations
 std::optional<std::vector<FileMetadata>> DatabaseManager::getAllFiles() {

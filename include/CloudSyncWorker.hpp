@@ -1,9 +1,11 @@
 #pragma once
+#include "Utility.hpp"
 #include "qobject.h"
 #include "qtmetamacros.h"
 #include "types.hpp"
 #include <atomic>
 #include <condition_variable>
+#include <queue>
 #include <string>
 #include <thread>
 namespace sync_app {
@@ -72,11 +74,32 @@ private:
   std::condition_variable m_tasksCV;
   std::mutex m_tasksPendingMutex;
   std::condition_variable m_upSyncTasksCV;
+  std::mutex m_nucleusQMutex;
+  std::condition_variable m_nucleusCV;
+
+  using filePriorityQ =
+      decltype(std::priority_queue<
+               FileQueueEntry, std::vector<FileQueueEntry>,
+               Utility::PriorityComparator<FileQueueEntry>>());
+  using dirPriorityQ =
+      decltype(std::priority_queue<
+               DirectoryQueueEntry, std::vector<DirectoryQueueEntry>,
+               Utility::PriorityComparator<DirectoryQueueEntry>>());
+
+  using FileQMapContainer =
+      decltype(std::map<std::string, std::map<std::string, filePriorityQ>>());
+
+  using DirQMapContainer =
+      decltype(std::map<std::string, std::map<std::string, dirPriorityQ>>());
+
+  filePriorityQ m_filePriorityQ;
+  dirPriorityQ m_dirPriorityQ;
 
   bool pollCloudToSyncToLocal();
   void runSyncDown();
   void runSyncUp();
   void processQueueToSyncUp();
+  void processSyncQueue();
   void controlThread();
 
   std::string getCurrentTime();
@@ -145,6 +168,22 @@ private:
   void removeActivity(const std::string &key);
 
   void initActivityAndPriorityQ();
+
+  void handleModifiedConflict(FileQueueEntry &cf, FileQueueEntry &lf,
+                              FileQMapContainer &filesInConflict,
+                              SyncStatus &localStatus);
+
+  void handleRenameConflict(DirectoryQueueEntry &cd, DirectoryQueueEntry &ld,
+                            DirQMapContainer &dirsInConflict,
+                            const SyncStatus &localStatus);
+
+  void handleRenameConflict(FileQueueEntry &cf, FileQueueEntry &lf,
+                            FileQMapContainer &filesInConflict,
+                            const SyncStatus &localStatus);
+
+  void handleMoveConflict(FileQueueEntry &cf, FileQueueEntry &lf,
+                          FileQMapContainer &filesInConflict,
+                          const SyncStatus &localStatus);
 
   std::optional<std::vector<DirectoryMetadata>>
   getFileDirTree(const FileQueueEntry &fq);

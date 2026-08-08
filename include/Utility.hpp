@@ -137,7 +137,7 @@ public:
 
     ) {
 
-      dst.absPath = src.absPath;
+      //      dst.absPath = src.absPath;
       dst.path = src.path;
       dst.folder = src.folder;
       dst.uuid = src.uuid;
@@ -180,6 +180,16 @@ public:
       } else if constexpr (requires { dst.lastSynced; }) {
 
         dst.lastSynced = "";
+      }
+
+      if constexpr (requires {
+                      dst.absPath;
+                      src.absPath;
+                    }) {
+        dst.absPath = src.absPath;
+
+      } else {
+        dst.absPath = "";
       }
 
       if constexpr (std::is_same_v<Target, DirectoryMetadata>)
