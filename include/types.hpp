@@ -42,6 +42,8 @@ enum class QPriority {
   FILE_RENAME_CLOUD,
   FILE_MOVED,
   FILE_MOVED_CLOUD,
+  CONFLICT_RENAME,
+  CONFLICT_MOVE,
   UNKNOWN
 };
 
@@ -518,24 +520,28 @@ inline size_t qPriorityToInt(QPriority priority) {
     return 8;
   case QPriority::FOLDER_RENAME:
     return 9;
-  case QPriority::FILE_DELETE:
+  case QPriority::CONFLICT_MOVE:
     return 10;
-  case QPriority::FILE_RENAME:
+  case QPriority::CONFLICT_RENAME:
     return 11;
-  case QPriority::FILE_MOVED:
+  case QPriority::FILE_DELETE:
     return 12;
-  case QPriority::FOLDER_CREATE_CLOUD:
+  case QPriority::FILE_RENAME:
     return 13;
-  case QPriority::FILE_DOWNLOAD:
+  case QPriority::FILE_MOVED:
     return 14;
-  case QPriority::FILE_MODIFIED_CLOUD:
+  case QPriority::FOLDER_CREATE_CLOUD:
     return 15;
-  case QPriority::FOLDER_CREATE:
+  case QPriority::FILE_DOWNLOAD:
     return 16;
-  case QPriority::FILE_UPLOAD:
+  case QPriority::FILE_MODIFIED_CLOUD:
     return 17;
-  case QPriority::FILE_MODIFIED:
+  case QPriority::FOLDER_CREATE:
     return 18;
+  case QPriority::FILE_UPLOAD:
+    return 19;
+  case QPriority::FILE_MODIFIED:
+    return 20;
   default:
     return 100;
   }
@@ -562,22 +568,26 @@ inline QPriority intToQPriority(size_t priority) {
   case 9:
     return QPriority::FOLDER_RENAME;
   case 10:
-    return QPriority::FILE_DELETE;
+    return QPriority::CONFLICT_MOVE;
   case 11:
-    return QPriority::FILE_RENAME;
+    return QPriority::CONFLICT_RENAME;
   case 12:
-    return QPriority::FILE_MOVED;
+    return QPriority::FILE_DELETE;
   case 13:
-    return QPriority::FOLDER_CREATE_CLOUD;
+    return QPriority::FILE_RENAME;
   case 14:
-    return QPriority::FILE_DOWNLOAD;
+    return QPriority::FILE_MOVED;
   case 15:
-    return QPriority::FILE_MODIFIED_CLOUD;
+    return QPriority::FOLDER_CREATE_CLOUD;
   case 16:
-    return QPriority::FOLDER_CREATE;
+    return QPriority::FILE_DOWNLOAD;
   case 17:
-    return QPriority::FILE_UPLOAD;
+    return QPriority::FILE_MODIFIED_CLOUD;
   case 18:
+    return QPriority::FOLDER_CREATE;
+  case 19:
+    return QPriority::FILE_UPLOAD;
+  case 20:
     return QPriority::FILE_MODIFIED;
   default:
     return QPriority::UNKNOWN;
@@ -600,6 +610,10 @@ inline std::string syncStatusToString(SyncStatus status) {
     return "moved";
   case SyncStatus::MOVE_CANDIDATE:
     return "move_candidate";
+  case SyncStatus::CONFLICT_MOVE:
+    return "conflict_move";
+  case SyncStatus::CONFLICT_RENAME:
+    return "conflict_rename";
   default:
     return "unknown";
   }
@@ -620,6 +634,10 @@ inline SyncStatus stringToSyncStatus(const std::string &syncStatus) {
     return SyncStatus::MOVED;
   if (syncStatus == "move_candidate")
     return SyncStatus::MOVE_CANDIDATE;
+  if (syncStatus == "conflict_rename")
+    return SyncStatus::CONFLICT_MOVE;
+  if (syncStatus == "conflict_rename")
+    return SyncStatus::CONFLICT_RENAME;
   return SyncStatus::UNKNOWN;
 }
 

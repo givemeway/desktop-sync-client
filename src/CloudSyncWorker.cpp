@@ -2291,6 +2291,75 @@ void CloudSyncWorker::controlThread() {
     // -------------------------------------------------------------------------
     // 1. Identify file conflicts
     for (const auto &f : filesToSync) {
+      auto itUuid = filesToSyncMap.find(f.uuid);
+      std::string path = f.path + f.filename;
+      auto itPath = filesToSyncPathMap.find(path);
+      if (itPath == filesToSyncPathMap.end()) {
+        filesToSyncPathMap[path] = f;
+        filesToSyncMap[f.uuid][f.syncType.value()].push(f);
+      }
+      if (itPath != filesToSyncPathMap.end()) {
+        FileQueueEntry file = itPath->second;
+        FileQueueEntry cf;
+        FileQueueEntry lf;
+        if (file.uuid != f.uuid) {
+          // new file conflict
+          FileQueueEntry f1 = f;
+          FileQueueEntry f2 = file;
+
+          if (f1.syncType == "local" && f2.syncType == "cloud") {
+            cf = f2;
+            lf = f1;
+          }
+          if (f1.syncType == "cloud" && f2.syncType == "local") {
+            cf = f1;
+            lf = f2;
+          }
+
+          cf.priority = qPriorityToInt(QPriority::FILE_DOWNLOAD);
+          lf.priority = qPriorityToInt(QPriority::CONFLICT_RENAME);
+          cf.sync_status = syncStatusToString(SyncStatus::NEW);
+          lf.sync_status = syncStatusToString(SyncStatus::CONFLICT_RENAME);
+          auto timestamp = getCurrentTime();
+          lf.filename = "CONFLICT_COPY_" + timestamp + "_" + lf.filename;
+        }
+        filesToSyncMap[cf.uuid][cf.syncType.value()].push(cf);
+        filesToSyncMap[lf.uuid][lf.syncType.value()].push(lf);
+        filesToSyncPathMap.erase(path);
+      }
+    }
+    for (auto &d : dirsToSync) {
+      auto it = dirsToSyncMap.find(d.uuid);
+      auto itPath = dirsToUpSyncPathMap.find(d.path);
+      if (itPath == dirsToUpSyncPathMap.end()) {
+        dirsToUpSyncPathMap[d.path] = d;
+        dirsToSyncMap[d.uuid][d.syncType.value()].push(d);
+      }
+      if (itPath != dirsToUpSyncPathMap.end()) {
+        auto dir = itPath->second;
+        DirectoryQueueEntry cd;
+        DirectoryQueueEntry ld;
+        if (dir.uuid != d.uuid) {
+          if (dir.syncType == "cloud" && d.syncType.value() == "local") {
+            cd = dir;
+            ld = d;
+          }
+          if (dir.syncType == "local" && d.syncType.value() == "cloud") {
+            cd = d;
+            ld = dir;
+          }
+          cd.sync_status = syncStatusToString(SyncStatus::NEW);
+          cd.priority = qPriorityToInt(QPriority::FOLDER_CREATE_CLOUD);
+          ld.sync_status = syncStatusToString(SyncStatus::NEW);
+          ld.priority = qPriorityToInt(QPriority::FOLDER_CREATE);
+        }
+        dirsToSyncMap[cd.uuid][cd.syncType.value()].push(cd);
+        dirsToSyncMap[ld.uuid][ld.syncType.value()].push(ld);
+        dirsToUpSyncPathMap.erase(itPath);
+      }
+    }
+    /*
+    for (const auto &f : filesToSync) {
 
       auto itUuid = filesToSyncMap.find(f.uuid);
       std::string path = f.path + f.filename;
@@ -2302,7 +2371,8 @@ void CloudSyncWorker::controlThread() {
         FileQueueEntry file = itPath->second;
         if (file.uuid == f.uuid) {
           filesToSyncPathMap.erase(path);
-        } else {
+        }
+        if (file.uuid != f.uuid) {
           // new file conflict
           FileQueueEntry f1 = f;
           FileQueueEntry f2 = file;
@@ -2391,7 +2461,7 @@ void CloudSyncWorker::controlThread() {
         }
       }
     }
-
+    */
     // 2. Identify Directory conflict
 
     for (auto &d : dirsToSync) {
@@ -2476,72 +2546,112 @@ void CloudSyncWorker::controlThread() {
     // -----------------------------------------------------------------------
     // Create Priority Queue to process events including conflicts
     // -----------------------------------------------------------------------
+
     for (auto &[uuid, syncTypeFileMap] : filesToSyncMap) {
-      if (syncTypeFileMap.size() == 1) {
-        auto itCloud = syncTypeFileMap.find("cloud");
-        auto itLocal = syncTypeFileMap.find("local");
-        if (itCloud != syncTypeFileMap.end()) {
-          while (!itCloud->second.empty()) {
-            auto fi = itCloud->second.top();
-            itCloud->second.pop();
-            std::lock_guard<std::mutex> lock(m_nucleusQMutex);
-            m_filePriorityQ.push(fi);
-          }
-        }
-        if (itLocal != syncTypeFileMap.end()) {
-          while (!itLocal->second.empty()) {
-            auto fi = itLocal->second.top();
-            itLocal->second.pop();
-            std::lock_guard<std::mutex> lock(m_nucleusQMutex);
-            m_filePriorityQ.push(fi);
-          }
-        }
+      auto itCloud = syncTypeFileMap.find("cloud");
+      auto itLocal = syncTypeFileMap.find("local");
+      int counter = 0;
+      if (itCloud != syncTypeFileMap.end()) {
+        ++counter;
+      }
+      if (itLocal != syncTypeFileMap.end()) {
+        ++counter;
+      }
+      if (counter == 2) {
+        // conflict detected
+      }
+      if (counter == 1) {
+        // no conflict
       }
     }
-
-    for (auto &[uuid, syncTypeFileMap] : filesInConflict) {
-      if (syncTypeFileMap.size() == 1) {
-        auto itCloud = syncTypeFileMap.find("cloud");
-        auto itLocal = syncTypeFileMap.find("local");
-        if (itCloud != syncTypeFileMap.end()) {
-          while (!itCloud->second.empty()) {
-            auto fi = itCloud->second.top();
-            itCloud->second.pop();
-            std::lock_guard<std::mutex> lock(m_nucleusQMutex);
-            m_filePriorityQ.push(fi);
-          }
-        }
-        if (itLocal != syncTypeFileMap.end()) {
-          while (!itLocal->second.empty()) {
-            auto fi = itLocal->second.top();
-            itLocal->second.pop();
-            std::lock_guard<std::mutex> lock(m_nucleusQMutex);
-            m_filePriorityQ.push(fi);
-          }
-        }
-      }
-    }
-
     for (auto &[uuid, syncTypeDirMap] : dirsToSyncMap) {
       if (syncTypeDirMap.size() == 1) {
         auto itCloud = syncTypeDirMap.find("cloud");
         auto itLocal = syncTypeDirMap.find("local");
+        int counter = 0;
         if (itCloud != syncTypeDirMap.end()) {
-          while (!itCloud->second.empty()) {
-            auto fi = itCloud->second.top();
-            itCloud->second.pop();
-            dq.push(fi);
-          }
+          ++counter;
         }
         if (itLocal != syncTypeDirMap.end()) {
-          while (!itLocal->second.empty()) {
-            auto fi = itLocal->second.top();
-            itLocal->second.pop();
-            dq.push(fi);
-          }
+          ++counter;
+        }
+        if (counter == 2) {
+          // conflict detected
+        }
+        if (counter == 1) {
+          // no conflict
         }
       }
-    }
+    } /*
+         for (auto &[uuid, syncTypeFileMap] : filesToSyncMap) {
+           if (syncTypeFileMap.size() == 1) {
+             auto itCloud = syncTypeFileMap.find("cloud");
+             auto itLocal = syncTypeFileMap.find("local");
+             if (itCloud != syncTypeFileMap.end()) {
+               while (!itCloud->second.empty()) {
+                 auto fi = itCloud->second.top();
+                 itCloud->second.pop();
+                 std::lock_guard<std::mutex> lock(m_nucleusQMutex);
+                 m_filePriorityQ.push(fi);
+               }
+             }
+             if (itLocal != syncTypeFileMap.end()) {
+               while (!itLocal->second.empty()) {
+                 auto fi = itLocal->second.top();
+                 itLocal->second.pop();
+                 std::lock_guard<std::mutex> lock(m_nucleusQMutex);
+                 m_filePriorityQ.push(fi);
+               }
+             }
+           }
+         }
+
+     for (auto &[uuid, syncTypeFileMap] : filesInConflict) {
+       if (syncTypeFileMap.size() == 1) {
+         auto itCloud = syncTypeFileMap.find("cloud");
+         auto itLocal = syncTypeFileMap.find("local");
+         if (itCloud != syncTypeFileMap.end()) {
+           while (!itCloud->second.empty()) {
+             auto fi = itCloud->second.top();
+             itCloud->second.pop();
+             std::lock_guard<std::mutex> lock(m_nucleusQMutex);
+             m_filePriorityQ.push(fi);
+           }
+         }
+         if (itLocal != syncTypeFileMap.end()) {
+           while (!itLocal->second.empty()) {
+             auto fi = itLocal->second.top();
+             itLocal->second.pop();
+             std::lock_guard<std::mutex> lock(m_nucleusQMutex);
+             m_filePriorityQ.push(fi);
+           }
+         }
+       }
+     }
+
+     for (auto &[uuid, syncTypeDirMap] : dirsToSyncMap) {
+       if (syncTypeDirMap.size() == 1) {
+         auto itCloud = syncTypeDirMap.find("cloud");
+         auto itLocal = syncTypeDirMap.find("local");
+         if (itCloud != syncTypeDirMap.end()) {
+           while (!itCloud->second.empty()) {
+             auto dq = itCloud->second.top();
+             itCloud->second.pop();
+             std::lock_guard<std::mutex> lock(m_nucleusQMutex);
+             m_dirPriorityQ.push(dq);
+           }
+         }
+         if (itLocal != syncTypeDirMap.end()) {
+           while (!itLocal->second.empty()) {
+             auto dq = itLocal->second.top();
+             itLocal->second.pop();
+             std::lock_guard<std::mutex> lock(m_nucleusQMutex);
+             m_dirPriorityQ.push(dq);
+           }
+         }
+       }
+     }
+     */
   }
 }
 
